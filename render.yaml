@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: contaqua-api
+    env: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: "false"
+      - key: APP_TIMEZONE
+        value: UTC
+      - key: APP_LOG_PATH
+        value: storage/logs/api.log
+      - key: MONGO_URI
+        sync: false
+      - key: MONGO_DB_NAME
+        sync: false
+      - key: ADMIN_TOKEN
+        sync: false
