@@ -17,10 +17,13 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 # Copy only composer files first for better build cache
 COPY composer.json composer.lock ./
-RUN composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
+RUN composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist --no-scripts
 
 # Copy application files
 COPY . .
+
+# Run composer scripts after all files are copied
+RUN composer dump-autoload --optimize --no-dev --classmap-authoritative
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
