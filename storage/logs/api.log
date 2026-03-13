@@ -175,3 +175,6 @@ admin_token=ContaquaAdminSecure2026"}
 [2026-03-13T11:31:10+00:00] INFO MongoDB client initialized 
 [2026-03-13T11:53:25+00:00] INFO Incoming request {"method":"GET","uri":"\/contaqua_api\/admin?admin_token=ContaquaAdminSecure2026"}
 [2026-03-13T11:53:25+00:00] INFO MongoDB client initialized 
+[2026-03-13T13:41:31+00:00] INFO Incoming request {"method":"GET","uri":"\/contaqua_api\/admin?admin_token=ContaquaAdminSecure2026"}
+[2026-03-13T13:41:31+00:00] INFO MongoDB client initialized 
+[2026-03-13T14:33:01+00:00] INFO Incoming request {"method":"GET","uri":"\/"}
