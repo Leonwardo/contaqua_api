@@ -407,7 +407,7 @@ textarea{min-height:150px;font-family:Consolas,monospace;font-size:12px}
 <div class="modal" id="modal-create-user">
   <div class="modal-card">
     <div class="modal-head"><h3>Criar Utilizador</h3><button class="close" type="button" data-close-modal>&times;</button></div>
-    <form method="post" action="./index.php" class="form-grid">
+    <form method="post" action="./index.php?admin_token=' . $tokenSafe . '" class="form-grid">
       <input type="hidden" name="action" value="create_user">
       <input type="hidden" name="admin_token" value="' . $tokenSafe . '">
       <label>User<input type="text" name="user" placeholder="ex: 003422" required></label>
@@ -430,7 +430,7 @@ textarea{min-height:150px;font-family:Consolas,monospace;font-size:12px}
 <div class="modal" id="modal-create-meter">
   <div class="modal-card">
     <div class="modal-head"><h3>Associar Contador</h3><button class="close" type="button" data-close-modal>&times;</button></div>
-    <form method="post" action="./index.php" class="form-grid">
+    <form method="post" action="./index.php?admin_token=' . $tokenSafe . '" class="form-grid">
       <input type="hidden" name="action" value="create_meter">
       <input type="hidden" name="admin_token" value="' . $tokenSafe . '">
       <label>DevEUI<input type="text" name="meterid" placeholder="ex: A1B2C3D4E5F60708" required></label>
@@ -452,7 +452,7 @@ textarea{min-height:150px;font-family:Consolas,monospace;font-size:12px}
 <div class="modal" id="modal-import">
   <div class="modal-card">
     <div class="modal-head"><h3>Importar Lista de Contadores</h3><button class="close" type="button" data-close-modal>&times;</button></div>
-    <form method="post" action="/index.php" class="form-grid" id="import-meter-form">
+    <form method="post" action="/index.php?admin_token=' . $tokenSafe . '" class="form-grid" id="import-meter-form">
       <input type="hidden" name="action" value="bulk_import_meters">
       <input type="hidden" name="admin_token" value="' . $tokenSafe . '">
       <label>Dias de validade<input type="number" name="valid_days" value="365" min="1"></label>
@@ -480,7 +480,7 @@ textarea{min-height:150px;font-family:Consolas,monospace;font-size:12px}
 <div class="modal" id="modal-edit-user">
   <div class="modal-card">
     <div class="modal-head"><h3>Editar Utilizador</h3><button class="close" type="button" data-close-modal>&times;</button></div>
-    <form method="post" action="./index.php" class="form-grid">
+    <form method="post" action="./index.php?admin_token=' . $tokenSafe . '" class="form-grid">
       <input type="hidden" name="action" value="update_user">
       <input type="hidden" name="admin_token" value="' . $tokenSafe . '">
       <label>User<input id="edit-user-name" type="text" name="user" readonly></label>
@@ -523,7 +523,7 @@ textarea{min-height:150px;font-family:Consolas,monospace;font-size:12px}
 <div class="modal" id="modal-assign-meter">
   <div class="modal-card">
     <div class="modal-head"><h3>Gerir Atribuições do Contador</h3><button class="close" type="button" data-close-modal>&times;</button></div>
-    <form method="post" action="./index.php" class="form-grid">
+    <form method="post" action="./index.php?admin_token=' . $tokenSafe . '" class="form-grid">
       <input type="hidden" name="action" value="assign_meter_users">
       <input type="hidden" name="admin_token" value="' . $tokenSafe . '">
       <label>DevEUI<input id="assign-meter-id" type="text" name="meterid" readonly></label>
