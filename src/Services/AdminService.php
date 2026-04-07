@@ -18,7 +18,6 @@ final class AdminService
         'FACTORY' => 4,
     ];
 
-    private bool $mockMode;
 
     private function buildUserToken(int $access, int $userId): string
     {
@@ -96,9 +95,6 @@ final class AdminService
     private function userAuthKeyMap(): array
     {
         $map = [];
-        if ($this->mockMode) {
-            return $map;
-        }
 
         $cursor = $this->collections->userAuth()->find();
         foreach ($cursor as $document) {
@@ -144,11 +140,6 @@ final class AdminService
 
         $authKeys = [];
         foreach ($users as $user) {
-            if ($this->mockMode) {
-                $authKeys[] = strtoupper(substr(hash('sha256', 'MOCK_AUTH_TECH:' . $user), 0, 32));
-                continue;
-            }
-
             $userDoc = $this->findUserDocument($user);
             if (!is_array($userDoc)) {
                 throw new \RuntimeException('Utilizador não encontrado: ' . $user);
@@ -217,13 +208,8 @@ final class AdminService
 
     public function __construct(private MongoCollections $collections)
     {
-        $this->mockMode = filter_var(getenv('MOCK_MODE') ?: 'false', FILTER_VALIDATE_BOOLEAN);
     }
 
-    public function isMockMode(): bool
-    {
-        return $this->mockMode;
-    }
 
     /** @return array<int, string> */
     public function availableRoles(): array
@@ -234,15 +220,6 @@ final class AdminService
     /** @return array<string, int> */
     public function counts(): array
     {
-        if ($this->mockMode) {
-            return [
-                'user_auth' => 3,
-                'meter_auth' => 5,
-                'meter_config' => 2,
-                'meter_session' => 12,
-            ];
-        }
-
         return [
             'user_auth' => $this->collections->userAuth()->countDocuments(),
             'meter_auth' => $this->collections->meterAuth()->countDocuments(),
@@ -254,27 +231,6 @@ final class AdminService
     /** @return array<int, array<string, mixed>> */
     public function latestSessions(int $limit = 20): array
     {
-        if ($this->mockMode) {
-            return [
-                [
-                    '_id' => 'mock_session_1',
-                    'user' => 'demo_user',
-                    'meter_id' => 'MTR001',
-                    'timestamp' => date('Y-m-d H:i:s'),
-                    'data' => ['voltage' => 230, 'current' => 5.2],
-                    'received_at' => date('Y-m-d H:i:s'),
-                ],
-                [
-                    '_id' => 'mock_session_2',
-                    'user' => 'demo_user',
-                    'meter_id' => 'MTR002',
-                    'timestamp' => date('Y-m-d H:i:s', strtotime('-1 hour')),
-                    'data' => ['voltage' => 228, 'current' => 4.8],
-                    'received_at' => date('Y-m-d H:i:s', strtotime('-1 hour')),
-                ],
-            ];
-        }
-
         $cursor = $this->collections->meterSession()->find([], [
             'sort' => ['_id' => -1],
             'limit' => $limit,
@@ -293,27 +249,6 @@ final class AdminService
     /** @return array<int, array<string, mixed>> */
     public function listUsers(int $limit = 100): array
     {
-        if ($this->mockMode) {
-            return [
-                [
-                    '_id' => 'mock_user_1',
-                    'user' => 'demo_user',
-                    'access' => 1,
-                    'user_id' => 1,
-                    'salt' => 'demo_salt',
-                    'pass' => 'demo_hash',
-                ],
-                [
-                    '_id' => 'mock_user_2',
-                    'user' => 'test_user',
-                    'access' => 2,
-                    'user_id' => 2,
-                    'salt' => 'demo_salt',
-                    'pass' => 'demo_hash',
-                ],
-            ];
-        }
-
         $cursor = $this->collections->userAuth()->find([], ['limit' => $limit]);
         $items = [];
         foreach ($cursor as $document) {
@@ -328,17 +263,6 @@ final class AdminService
     /** @return array<int, array<string, mixed>> */
     public function listMeters(int $limit = 100): array
     {
-        if ($this->mockMode) {
-            return [
-                [
-                    '_id' => 'mock_meter_1',
-                    'deveui' => 'A1B2C3D4E5F60708',
-                    'authkeys' => ['00112233445566778899AABBCCDDEEFF'],
-                    'assigned_users' => ['demo_user'],
-                ],
-            ];
-        }
-
         $authKeyMap = $this->userAuthKeyMap();
 
         $cursor = $this->collections->meterAuth()->find([], [
@@ -389,31 +313,13 @@ final class AdminService
         $salt = bin2hex(random_bytes(8));
         $passHash = hash('sha256', $salt . ':' . $pass);
 
-        $lastUser = null;
-        if (!$this->mockMode) {
-            $lastUser = $this->collections->userAuth()->findOne([], [
-                'sort' => ['user_id' => -1, '_id' => -1],
-            ]);
-        }
+        $lastUser = $this->collections->userAuth()->findOne([], [
+            'sort' => ['user_id' => -1, '_id' => -1],
+        ]);
         $nextUserId = is_array($lastUser) ? ((int) ($lastUser['user_id'] ?? 0) + 1) : 1;
         $techKey = $this->buildAuthTechKey($access, $nextUserId);
         $token = $this->buildUserToken($access, $nextUserId);
         $qrPayload = 'userid=' . rawurlencode($user) . '&rights=' . $rights . '&auth_tech=' . $techKey;
-
-        if ($this->mockMode) {
-            return [
-                'ok' => true,
-                'mock' => true,
-                'user' => $user,
-                'role' => strtolower($roleCode),
-                'access' => $access,
-                'user_id' => $nextUserId,
-                'token' => $token,
-                'auth_tech' => $techKey,
-                'qr_payload' => $qrPayload,
-                'valid_until' => $validUntil->format('Y-m-d H:i:s'),
-            ];
-        }
 
         if ($this->findUserDocument($user) !== null) {
             throw new \RuntimeException('Utilizador já existe.');
@@ -429,7 +335,6 @@ final class AdminService
 
         return [
             'ok' => true,
-            'mock' => false,
             'user' => $user,
             'role' => strtolower($roleCode),
             'access' => $access,
@@ -451,23 +356,10 @@ final class AdminService
         $users = $resolved['users'];
         $authKeys = $resolved['authkeys'];
 
-        if ($this->mockMode) {
-            return [
-                'ok' => true,
-                'mock' => true,
-                'meterid' => $meterId,
-                'deveui' => $meterId,
-                'assigned_users' => $users,
-                'authkeys' => $authKeys,
-                'valid_until' => $validUntil->format('Y-m-d H:i:s'),
-            ];
-        }
-
         $this->upsertMeterAuth($meterId, $authKeys);
 
         return [
             'ok' => true,
-            'mock' => false,
             'meterid' => $meterId,
             'deveui' => $meterId,
             'assigned_users' => $users,
@@ -509,11 +401,7 @@ final class AdminService
 
             try {
                 $meterId = $this->normalizeDeveui($trimmed);
-                if ($this->mockMode) {
-                    $this->createMeterLink($meterId, implode(',', $users), $validDays);
-                } else {
-                    $this->upsertMeterAuth($meterId, $authKeys);
-                }
+                $this->upsertMeterAuth($meterId, $authKeys);
                 $createdOrUpdated++;
             } catch (\Throwable $exception) {
                 $skipped++;
@@ -563,10 +451,6 @@ final class AdminService
     /** @return array<string, mixed> */
     public function updateUser(string $user, string $role = '', string $pass = ''): array
     {
-        if ($this->mockMode) {
-            return ['ok' => true, 'mock' => true, 'user' => trim($user)];
-        }
-
         $existing = $this->findUserDocument($user);
         if (!is_array($existing)) {
             throw new \RuntimeException('Utilizador não encontrado.');
@@ -631,10 +515,6 @@ final class AdminService
     /** @return array<string, mixed> */
     public function deleteUser(string $user): array
     {
-        if ($this->mockMode) {
-            return ['ok' => true, 'mock' => true, 'user' => trim($user), 'deleted' => 1];
-        }
-
         $existing = $this->findUserDocument($user);
         if (!is_array($existing)) {
             throw new \RuntimeException('Utilizador não encontrado.');
@@ -689,10 +569,6 @@ final class AdminService
         $users = $resolved['users'];
         $authKeys = $resolved['authkeys'];
 
-        if ($this->mockMode) {
-            return ['ok' => true, 'mock' => true, 'deveui' => $meterId, 'assigned_users' => $users, 'authkeys' => $authKeys];
-        }
-
         $existing = $this->collections->meterAuth()->findOne([
             '$or' => [
                 ['deveui' => $meterId],
@@ -718,10 +594,6 @@ final class AdminService
         $meterId = strtoupper(trim($meterId));
         if ($meterId === '') {
             throw new \InvalidArgumentException('meterid é obrigatório.');
-        }
-
-        if ($this->mockMode) {
-            return ['ok' => true, 'mock' => true, 'deveui' => $meterId, 'deleted' => 1];
         }
 
         $result = $this->collections->meterAuth()->deleteOne([

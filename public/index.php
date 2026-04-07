@@ -85,6 +85,8 @@ $router->add('GET', '/api/android/{id}', static fn(Request $req, array $params) 
 
 $router->add('GET', '/admin', static fn(Request $req, array $params) => $adminController->dashboard($req));
 $router->add('POST', '/admin', static fn(Request $req, array $params) => $adminController->dashboard($req));
+$router->add('GET', '/index.php', static fn(Request $req, array $params) => $adminController->dashboard($req));
+$router->add('POST', '/index.php', static fn(Request $req, array $params) => $adminController->dashboard($req));
 $router->add('GET', '/api/admin/metrics', static fn(Request $req, array $params) => $adminController->metrics($req));
 
 try {

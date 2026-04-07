@@ -24,6 +24,15 @@ final class AdminController
         }
 
         $currentAdminToken = (string) ($request->input('admin_token', $request->bearerToken() ?? ''));
+        
+        // Check if requesting a specific page
+        $page = (string) $request->input('page', '');
+        if ($page === 'users') {
+            return $this->usersPage($request, $currentAdminToken);
+        }
+        if ($page === 'meters') {
+            return $this->metersPage($request, $currentAdminToken);
+        }
 
         if ($request->method === 'POST') {
             $flash = 'Operação concluída.';
@@ -32,13 +41,18 @@ final class AdminController
             try {
                 $action = (string) $request->input('action', '');
                 if ($action === 'create_user') {
-                    $this->adminService->createUser(
+                    $password = (string) $request->input('pass', '');
+                    $result = $this->adminService->createUser(
                         (string) $request->input('user', ''),
-                        (string) $request->input('pass', ''),
+                        $password,
                         (string) $request->input('role', 'technician'),
                         (int) $request->input('valid_days', 365)
                     );
                     $flash = 'Utilizador criado com sucesso.';
+                    // Store user data for success modal
+                    $result['password'] = $password; // Add password for display
+                    $state['show_user_success'] = true;
+                    $state['user_data'] = $result;
                 } elseif ($action === 'create_meter') {
                     $result = $this->adminService->createMeterLink(
                         (string) $request->input('meterid', ''),
@@ -46,6 +60,9 @@ final class AdminController
                         (int) $request->input('valid_days', 365)
                     );
                     $flash = 'Contador ' . (string) ($result['deveui'] ?? '') . ' associado com sucesso.';
+                    // Store meter data for success modal
+                    $state['show_meter_success'] = true;
+                    $state['meter_data'] = $result;
                 } elseif ($action === 'bulk_import_meters') {
                     $result = $this->adminService->importMeterList(
                         (string) $request->input('users_csv', ''),
@@ -81,12 +98,22 @@ final class AdminController
                 $flashType = 'error';
             }
 
-            $location = $request->path
-                . '?admin_token=' . rawurlencode($currentAdminToken)
-                . '&flash=' . rawurlencode($flash)
-                . '&flash_type=' . rawurlencode($flashType);
-
-            return new Response(303, '', ['Location' => $location]);
+            // Return JSON response for AJAX handling
+            $responseData = [
+                'success' => $flashType === 'success',
+                'message' => $flash,
+                'type' => $flashType
+            ];
+            
+            // Include user/meter data for modals if available
+            if (!empty($state['user_data'])) {
+                $responseData['user_data'] = $state['user_data'];
+            }
+            if (!empty($state['meter_data'])) {
+                $responseData['meter_data'] = $state['meter_data'];
+            }
+            
+            return new Response(200, json_encode($responseData), ['Content-Type' => 'application/json']);
         }
 
         $flash = trim((string) $request->input('flash', ''));
@@ -100,7 +127,6 @@ final class AdminController
             $sessions = $this->adminService->latestSessions();
             $users = $this->adminService->listUsers();
             $meters = $this->adminService->listMeters();
-            $mockMode = $this->adminService->isMockMode();
         } catch (\Throwable $exception) {
             $counts = [
                 'user_auth' => 0,
@@ -111,7 +137,6 @@ final class AdminController
             $sessions = [];
             $users = [];
             $meters = [];
-            $mockMode = true;
             $flash = 'Erro ao carregar dados do painel: ' . $exception->getMessage();
             $flashType = 'error';
         }
@@ -126,7 +151,10 @@ final class AdminController
                 'flash_type' => $flashType,
                 'admin_token' => $currentAdminToken,
                 'roles' => $this->adminService->availableRoles(),
-                'mock_mode' => $mockMode,
+                'show_user_success' => $state['show_user_success'] ?? false,
+                'user_data' => $state['user_data'] ?? null,
+                'show_meter_success' => $state['show_meter_success'] ?? false,
+                'meter_data' => $state['meter_data'] ?? null,
             ]
         );
 
@@ -146,7 +174,6 @@ final class AdminController
                 'latest_sessions' => $this->adminService->latestSessions(),
                 'users' => $this->adminService->listUsers(),
                 'meters' => $this->adminService->listMeters(),
-                'mock_mode' => $this->adminService->isMockMode(),
             ]);
         } catch (\Throwable $exception) {
             return Response::json([
@@ -160,5 +187,90 @@ final class AdminController
     {
         $token = (string) ($request->input('admin_token', $request->bearerToken() ?? ''));
         return $token !== '' && hash_equals($this->adminToken, $token);
+    }
+
+    private function usersPage(Request $request, string $adminToken): Response
+    {
+        $search = (string) $request->input('search', '');
+        $role = (string) $request->input('role', '');
+        $page = max(1, (int) $request->input('page_num', 1));
+        $limit = 50;
+        $offset = ($page - 1) * $limit;
+
+        try {
+            $users = $this->adminService->listUsers(1000); // Get all for filtering
+            $totalCount = count($users);
+            
+            // Apply filters
+            if ($search !== '') {
+                $searchLower = strtolower($search);
+                $users = array_filter($users, function($user) use ($searchLower) {
+                    return str_contains(strtolower($user['user'] ?? ''), $searchLower) ||
+                           str_contains(strtolower((string)($user['user_id'] ?? '')), $searchLower);
+                });
+            }
+            
+            if ($role !== '') {
+                $roleMap = ['TECHNICIAN' => 1, 'MANAGER' => 2, 'MANUFACTURER' => 3, 'FACTORY' => 4];
+                $access = $roleMap[strtoupper($role)] ?? 0;
+                $users = array_filter($users, function($user) use ($access) {
+                    return (int)($user['access'] ?? 0) === $access;
+                });
+            }
+            
+            $filteredCount = count($users);
+            $users = array_slice($users, $offset, $limit);
+            
+            $html = AdminView::usersList($users, [
+                'search' => $search,
+                'role' => $role,
+                'page' => $page,
+                'total_count' => $filteredCount,
+                'per_page' => $limit,
+                'admin_token' => $adminToken,
+                'roles' => $this->adminService->availableRoles(),
+            ]);
+            
+            return new Response(200, $html, ['Content-Type' => 'text/html; charset=utf-8']);
+        } catch (\Throwable $exception) {
+            return new Response(500, 'Erro: ' . $exception->getMessage(), ['Content-Type' => 'text/plain']);
+        }
+    }
+
+    private function metersPage(Request $request, string $adminToken): Response
+    {
+        $search = (string) $request->input('search', '');
+        $page = max(1, (int) $request->input('page_num', 1));
+        $limit = 50;
+        $offset = ($page - 1) * $limit;
+
+        try {
+            $meters = $this->adminService->listMeters(1000); // Get all for filtering
+            $totalCount = count($meters);
+            
+            // Apply filters
+            if ($search !== '') {
+                $searchLower = strtolower($search);
+                $meters = array_filter($meters, function($meter) use ($searchLower) {
+                    return str_contains(strtolower($meter['deveui'] ?? ''), $searchLower) ||
+                           str_contains(strtolower(implode(' ', $meter['assigned_users'] ?? [])), $searchLower);
+                });
+            }
+            
+            $filteredCount = count($meters);
+            $meters = array_slice($meters, $offset, $limit);
+            
+            $html = AdminView::metersList($meters, [
+                'search' => $search,
+                'page' => $page,
+                'total_count' => $filteredCount,
+                'per_page' => $limit,
+                'admin_token' => $adminToken,
+            ]);
+            
+            return new Response(200, $html, ['Content-Type' => 'text/html; charset=utf-8']);
+        } catch (\Throwable $exception) {
+            return new Response(500, 'Erro: ' . $exception->getMessage(), ['Content-Type' => 'text/plain']);
+        }
     }
 }
