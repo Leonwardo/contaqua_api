@@ -1,36 +1,37 @@
 <?php
+
 declare(strict_types=1);
 
 namespace App\Database;
 
+use App\Services\Logger;
+use MongoDB\Client;
 use MongoDB\Database;
 
-/**
- * Wrapper para compatibilidade com código existente
- * Usa o novo MongoManager internamente
- */
 final class MongoConnection
 {
-    private MongoManager $manager;
+    private ?Client $client = null;
 
     public function __construct(
         private string $uri,
         private string $databaseName,
-        private ?\App\Services\Logger $logger = null
+        private Logger $logger
     ) {
-        $this->manager = MongoManager::getInstance();
     }
 
     public function database(): Database
     {
-        return $this->manager->getDatabase();
-    }
+        if ($this->client === null) {
+            $this->client = new Client($this->uri, [], [
+                'typeMap' => [
+                    'root' => 'array',
+                    'document' => 'array',
+                    'array' => 'array',
+                ],
+            ]);
+            $this->logger->info('MongoDB client initialized');
+        }
 
-    /**
-     * Obtém o MongoManager para acesso direto
-     */
-    public function getManager(): MongoManager
-    {
-        return $this->manager;
+        return $this->client->selectDatabase($this->databaseName);
     }
 }

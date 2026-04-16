@@ -36,10 +36,6 @@ final class AppConfig
 
     public static function adminToken(): string
     {
-        $token = Env::get('ADMIN_TOKEN');
-        if ($token === null || $token === '' || $token === 'change_me_admin_token') {
-            return 'ContaquaAdminSecure2026';
-        }
-        return $token;
+        return (string) Env::get('ADMIN_TOKEN', 'change_me_admin_token');
     }
 }

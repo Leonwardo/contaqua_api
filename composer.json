@@ -6,7 +6,7 @@
     "php": "^8.0",
     "ext-json": "*",
     "ext-mongodb": "*",
-    "mongodb/mongodb": "^2.0"
+    "mongodb/mongodb": "^1.15"
   },
   "autoload": {
     "psr-4": {

@@ -17,17 +17,6 @@ final class AdminService
         'MANUFACTURER' => 3,
         'FACTORY' => 4,
     ];
-    
-    private function log(string $message): void
-    {
-        $logFile = __DIR__ . '/../../logs/admin_operations.log';
-        $dir = dirname($logFile);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0755, true);
-        }
-        $timestamp = date('[Y-m-d H:i:s]');
-        file_put_contents($logFile, "$timestamp $message\n", FILE_APPEND | LOCK_EX);
-    }
 
 
     private function buildUserToken(int $access, int $userId): string
@@ -310,14 +299,10 @@ final class AdminService
     /** @return array<string, mixed> */
     public function createUser(string $user, string $pass, string $role = 'technician', int $validDays = 365): array
     {
-        $this->log('AdminService::createUser - START. User: ' . $user . ', Role: ' . $role);
-        
         $user = trim($user);
         $pass = trim($pass);
         $access = $this->resolveRoleAccess($role);
         $roleCode = $this->roleFromAccess($access);
-        
-        $this->log('AdminService::createUser - Access resolved: ' . $access);
 
         if ($user === '' || $pass === '') {
             throw new \InvalidArgumentException('User e password são obrigatórios.');
@@ -334,26 +319,19 @@ final class AdminService
         $nextUserId = is_array($lastUser) ? ((int) ($lastUser['user_id'] ?? 0) + 1) : 1;
         $techKey = $this->buildAuthTechKey($access, $nextUserId);
         $token = $this->buildUserToken($access, $nextUserId);
-        $qrPayload = 'userid=' . rawurlencode($user) . '&rights=' . $rights . '&key=' . $techKey;
+        $qrPayload = 'userid=' . rawurlencode($user) . '&rights=' . $rights . '&auth_tech=' . $techKey;
 
         if ($this->findUserDocument($user) !== null) {
             throw new \RuntimeException('Utilizador já existe.');
         }
 
-        try {
-            $insertResult = $this->collections->userAuth()->insertOne([
-                'access' => $access,
-                'user_id' => $nextUserId,
-                'user' => $user,
-                'pass' => $passHash,
-                'salt' => $salt,
-            ]);
-            $this->log('AdminService::createUser - Insert successful. Inserted ID: ' . $insertResult->getInsertedId());
-        } catch (\Exception $e) {
-            $this->log('AdminService::createUser - MongoDB insert failed: ' . $e->getMessage());
-            $this->log('Stack trace: ' . $e->getTraceAsString());
-            throw new \RuntimeException('Erro ao salvar no MongoDB: ' . $e->getMessage());
-        }
+        $this->collections->userAuth()->insertOne([
+            'access' => $access,
+            'user_id' => $nextUserId,
+            'user' => $user,
+            'pass' => $passHash,
+            'salt' => $salt,
+        ]);
 
         return [
             'ok' => true,
@@ -371,7 +349,6 @@ final class AdminService
     /** @return array<string, mixed> */
     public function createMeterLink(string $meterId, string $usersCsv, int $validDays = 365): array
     {
-        error_log('AdminService::createMeterLink - START. Meter: ' . $meterId);
         $meterId = $this->normalizeDeveui($meterId);
 
         $validUntil = (new DateTimeImmutable('now'))->add(new DateInterval('P' . max(1, $validDays) . 'D'));
@@ -467,8 +444,18 @@ final class AdminService
             'user_id' => $userId,
             'token' => $this->buildUserToken($access, $userId),
             'auth_tech' => $authTech,
-            'qr_payload' => 'userid=' . rawurlencode($userName) . '&rights=' . $rights . '&key=' . $authTech,
+            'qr_payload' => 'userid=' . rawurlencode($userName) . '&rights=' . $rights . '&auth_tech=' . $authTech,
         ];
+    }
+
+    /** @return array<string, mixed> */
+    public function updateUser(string $user, string $role = '', string $pass = ''): array
+    {
+        $existing = $this->findUserDocument($user);
+        if (!is_array($existing)) {
+            throw new \RuntimeException('Utilizador não encontrado.');
+        }
+
         $access = (int) ($existing['access'] ?? 0);
         $userId = (int) ($existing['user_id'] ?? 0);
         if ($access <= 0 || $userId <= 0) {
@@ -526,79 +513,10 @@ final class AdminService
     }
 
     /** @return array<string, mixed> */
-    public function updateUser(string $user, string $role = '', string $pass = ''): array
-    {
-        error_log('AdminService::updateUser - START. User: ' . $user . ', Role: ' . $role);
-        $existing = $this->findUserDocument($user);
-        if (!is_array($existing)) {
-            error_log('AdminService::updateUser - User not found: ' . $user);
-            throw new \RuntimeException('Utilizador não encontrado.');
-        }
-
-        $userName = (string) ($userDoc['user'] ?? $userDoc['username'] ?? '');
-        $access = (int) ($userDoc['access'] ?? 0);
-        $userId = (int) ($userDoc['user_id'] ?? 0);
-        if ($userName === '' || $access <= 0 || $userId <= 0) {
-            throw new \RuntimeException('Documento de utilizador inválido.');
-        }
-
-        $set = [];
-        $newAccess = $access;
-        if (trim($role) !== '') {
-            $newAccess = $this->resolveRoleAccess($role);
-            if ($newAccess !== $access) {
-                $set['access'] = $newAccess;
-            }
-        }
-
-        $pass = trim($pass);
-        if ($pass !== '') {
-            $salt = bin2hex(random_bytes(8));
-            $set['salt'] = $salt;
-            $set['pass'] = hash('sha256', $salt . ':' . $pass);
-        }
-
-        if ($set !== []) {
-            $this->collections->userAuth()->updateOne(['_id' => $existing['_id']], ['$set' => $set]);
-        }
-
-        $oldAuthKey = $this->buildAuthTechKey($access, $userId);
-        $newAuthKey = $this->buildAuthTechKey($newAccess, $userId);
-        if ($oldAuthKey !== $newAuthKey) {
-            $cursor = $this->collections->meterAuth()->find(['authkeys' => ['$in' => [$oldAuthKey]]]);
-            foreach ($cursor as $meterDocument) {
-                if (!is_array($meterDocument)) {
-                    continue;
-                }
-
-                $keys = [];
-                if (isset($meterDocument['authkeys']) && is_array($meterDocument['authkeys'])) {
-                    foreach ($meterDocument['authkeys'] as $key) {
-                        if (is_string($key) && $key !== '') {
-                            $keys[] = strtoupper($key);
-                        }
-                    }
-                }
-
-                $keys = array_values(array_unique(array_map(
-                    static fn (string $value): string => $value === $oldAuthKey ? $newAuthKey : $value,
-                    $keys
-                )));
-
-                $this->collections->meterAuth()->updateOne(['_id' => $meterDocument['_id']], ['$set' => ['authkeys' => $keys]]);
-            }
-        }
-
-        return $this->userQrData($user);
-    }
-
-    /** @return array<string, mixed> */
     public function deleteUser(string $user): array
     {
-        error_log('AdminService::deleteUser - START. User: ' . $user);
         $existing = $this->findUserDocument($user);
         if (!is_array($existing)) {
-            error_log('AdminService::deleteUser - User not found: ' . $user);
             throw new \RuntimeException('Utilizador não encontrado.');
         }
 
@@ -607,38 +525,27 @@ final class AdminService
         $userId = (int) ($existing['user_id'] ?? 0);
         $authKey = ($access > 0 && $userId > 0) ? $this->buildAuthTechKey($access, $userId) : '';
 
-        try {
-            $deleteResult = $this->collections->userAuth()->deleteOne(['_id' => $existing['_id']]);
-            error_log('AdminService::deleteUser - Delete result: ' . $deleteResult->getDeletedCount());
-        } catch (\Exception $e) {
-            error_log('AdminService::deleteUser - MongoDB delete failed: ' . $e->getMessage());
-            throw new \RuntimeException('Erro ao eliminar utilizador: ' . $e->getMessage());
-        }
-        
+        $deleteResult = $this->collections->userAuth()->deleteOne(['_id' => $existing['_id']]);
         $detached = 0;
 
         if ($authKey !== '') {
-            try {
-                $cursor = $this->collections->meterAuth()->find(['authkeys' => ['$in' => [$authKey]]]);
-                foreach ($cursor as $meterDocument) {
-                    if (!is_array($meterDocument)) {
-                        continue;
-                    }
+            $cursor = $this->collections->meterAuth()->find(['authkeys' => ['$in' => [$authKey]]]);
+            foreach ($cursor as $meterDocument) {
+                if (!is_array($meterDocument)) {
+                    continue;
+                }
 
-                    $keys = [];
-                    if (isset($meterDocument['authkeys']) && is_array($meterDocument['authkeys'])) {
-                        foreach ($meterDocument['authkeys'] as $key) {
-                            if (is_string($key) && $key !== '' && strtoupper($key) !== $authKey) {
-                                $keys[] = strtoupper($key);
-                            }
+                $keys = [];
+                if (isset($meterDocument['authkeys']) && is_array($meterDocument['authkeys'])) {
+                    foreach ($meterDocument['authkeys'] as $key) {
+                        if (is_string($key) && $key !== '' && strtoupper($key) !== $authKey) {
+                            $keys[] = strtoupper($key);
                         }
                     }
-
-                    $this->collections->meterAuth()->updateOne(['_id' => $meterDocument['_id']], ['$set' => ['authkeys' => array_values(array_unique($keys))]]);
-                    $detached++;
                 }
-            } catch (\Exception $e) {
-                error_log('AdminService::deleteUser - Error detaching meters: ' . $e->getMessage());
+
+                $this->collections->meterAuth()->updateOne(['_id' => $meterDocument['_id']], ['$set' => ['authkeys' => array_values(array_unique($keys))]]);
+                $detached++;
             }
         }
 
@@ -684,24 +591,17 @@ final class AdminService
     /** @return array<string, mixed> */
     public function deleteMeter(string $meterId): array
     {
-        $this->log('AdminService::deleteMeter - START. Meter: ' . $meterId);
         $meterId = strtoupper(trim($meterId));
         if ($meterId === '') {
             throw new \InvalidArgumentException('meterid é obrigatório.');
         }
 
-        try {
-            $result = $this->collections->meterAuth()->deleteOne([
-                '$or' => [
-                    ['deveui' => $meterId],
-                    ['meterid' => $meterId],
-                ],
-            ]);
-            $this->log('AdminService::deleteMeter - Delete result: ' . $result->getDeletedCount());
-        } catch (\Exception $e) {
-            $this->log('AdminService::deleteMeter - MongoDB delete failed: ' . $e->getMessage());
-            throw new \RuntimeException('Erro ao eliminar contador: ' . $e->getMessage());
-        }
+        $result = $this->collections->meterAuth()->deleteOne([
+            '$or' => [
+                ['deveui' => $meterId],
+                ['meterid' => $meterId],
+            ],
+        ]);
 
         return ['ok' => true, 'deveui' => $meterId, 'deleted' => $result->getDeletedCount()];
     }
