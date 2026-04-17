@@ -2,103 +2,122 @@
 
 declare(strict_types=1);
 
-use App\Config\AppConfig;
-use App\Config\Env;
-use App\Controllers\AdminController;
-use App\Controllers\AppUpdateController;
-use App\Controllers\AuthController;
-use App\Controllers\FirmwareController;
-use App\Controllers\HealthController;
-use App\Controllers\MeterController;
-use App\Database\MongoCollections;
-use App\Database\MongoConnection;
-use App\Http\Request;
-use App\Http\Router;
-use App\Services\AdminService;
-use App\Services\Logger;
-use App\Services\MeterAuthService;
-use App\Services\MeterConfigService;
-use App\Services\MeterSessionService;
-use App\Services\UserAuthService;
-
-require_once dirname(__DIR__) . '/bootstrap/autoload.php';
-
-$basePath = dirname(__DIR__);
-Env::load($basePath);
-date_default_timezone_set(AppConfig::timezone());
-
-$logger = new Logger(AppConfig::logPath($basePath));
-$logger->info('Incoming request', [
-    'method' => $_SERVER['REQUEST_METHOD'] ?? 'GET',
-    'uri' => $_SERVER['REQUEST_URI'] ?? '/',
-]);
-
-$mongoUri = AppConfig::mongoUri();
-if ($mongoUri === '') {
-    http_response_code(500);
-    header('Content-Type: application/json');
-    echo json_encode(['ok' => false, 'error' => 'MONGO_URI not configured']);
+// Verificar se vendor existe, senão usar fallback
+if (!file_exists(__DIR__ . '/../vendor/autoload.php')) {
+    require __DIR__ . '/index-fallback.php';
     exit;
 }
 
-$mongo = new MongoConnection($mongoUri, AppConfig::mongoDatabase(), $logger);
-$collections = new MongoCollections($mongo);
+use DI\ContainerBuilder;
+use Monolog\Handler\RotatingFileHandler;
+use Monolog\Logger;
+use Psr\Container\ContainerInterface;
+use Psr\Log\LoggerInterface;
+use Slim\Factory\AppFactory;
 
-$userAuthService = new UserAuthService($collections, $logger);
-$meterAuthService = new MeterAuthService($collections, $userAuthService);
-$meterConfigService = new MeterConfigService($collections);
-$meterSessionService = new MeterSessionService($collections, $logger);
-$adminService = new AdminService($collections);
+require __DIR__ . '/../vendor/autoload.php';
 
-$healthController = new HealthController();
-$authController = new AuthController($userAuthService);
-$meterController = new MeterController($meterAuthService, $meterConfigService, $meterSessionService, $collections, $userAuthService);
-$adminController = new AdminController($adminService, AppConfig::adminToken());
-$firmwareController = new FirmwareController($collections, $userAuthService);
-$appUpdateController = new AppUpdateController();
+// Load environment variables
+$dotenv = Dotenv\Dotenv::createImmutable(dirname(__DIR__));
+$dotenv->safeLoad();
 
-$router = new Router();
+// Set timezone
+date_default_timezone_set($_ENV['APP_TIMEZONE'] ?? 'Europe/Lisbon');
 
-$router->add('GET', '/api/server', static fn(Request $req, array $params) => $healthController->server());
-$router->add('GET', '/api/health', static fn(Request $req, array $params) => $healthController->health());
+// Build container
+$containerBuilder = new ContainerBuilder();
 
-$router->add('POST', '/api/auth/validate', static fn(Request $req, array $params) => $authController->validate($req));
-$router->add('POST', '/api/user_token', static fn(Request $req, array $params) => $authController->userToken($req));
+// Add settings
+$settings = require __DIR__ . '/../config/settings.php';
+$containerBuilder->addDefinitions($settings($_ENV));
 
-$router->add('POST', '/api/meter/authorize', static fn(Request $req, array $params) => $meterController->authorize($req));
-$router->add('POST', '/api/meter_token', static fn(Request $req, array $params) => $meterController->meterToken($req));
+// Add logger
+$containerBuilder->addDefinitions([
+    LoggerInterface::class => function (ContainerInterface $c) {
+        $settings = $c->get('settings')['logger'];
+        $logger = new Logger($settings['name']);
+        $logger->pushHandler(new RotatingFileHandler(
+            $settings['path'],
+            30,
+            $settings['level']
+        ));
+        return $logger;
+    },
+]);
 
-$router->add('GET', '/api/meter/config', static fn(Request $req, array $params) => $meterController->config($req));
-$router->add('POST', '/api/config', static fn(Request $req, array $params) => $meterController->configLegacy($req));
-$router->add('GET', '/api/config/{id}', static fn(Request $req, array $params) => $meterController->configFile($params));
+// Add MongoDB connection
+$containerBuilder->addDefinitions([
+    \App\Database\MongoConnection::class => function (ContainerInterface $c) {
+        $config = $c->get('mongodb');
+        $logger = $c->get(LoggerInterface::class);
+        return new \App\Database\MongoConnection($config, $logger);
+    },
+    \App\Database\MongoCollections::class => function (ContainerInterface $c) {
+        $connection = $c->get(\App\Database\MongoConnection::class);
+        return new \App\Database\MongoCollections($connection);
+    },
+]);
 
-$router->add('POST', '/api/meter/session', static fn(Request $req, array $params) => $meterController->session($req));
+// Add services
+$containerBuilder->addDefinitions([
+    \App\Services\UserAuthService::class => function (ContainerInterface $c) {
+        $collections = $c->get(\App\Database\MongoCollections::class);
+        $logger = $c->get(LoggerInterface::class);
+        $allowLegacy = $c->get('app')['allow_legacy_plain_passwords'] ?? false;
+        return new \App\Services\UserAuthService($collections, $logger, $allowLegacy);
+    },
+    \App\Services\MeterAuthService::class => function (ContainerInterface $c) {
+        $collections = $c->get(\App\Database\MongoCollections::class);
+        $userAuthService = $c->get(\App\Services\UserAuthService::class);
+        $logger = $c->get(LoggerInterface::class);
+        return new \App\Services\MeterAuthService($collections, $userAuthService, $logger);
+    },
+    \App\Services\MeterConfigService::class => function (ContainerInterface $c) {
+        $collections = $c->get(\App\Database\MongoCollections::class);
+        $logger = $c->get(LoggerInterface::class);
+        return new \App\Services\MeterConfigService($collections, $logger);
+    },
+    \App\Services\MeterSessionService::class => function (ContainerInterface $c) {
+        $collections = $c->get(\App\Database\MongoCollections::class);
+        $logger = $c->get(LoggerInterface::class);
+        return new \App\Services\MeterSessionService($collections, $logger);
+    },
+    \App\Services\AdminService::class => function (ContainerInterface $c) {
+        return new \App\Services\AdminService(
+            $c->get(\App\Database\MongoCollections::class),
+            $c->get(\App\Services\UserAuthService::class),
+            $c->get(\App\Services\MeterAuthService::class),
+            $c->get(\App\Services\MeterConfigService::class),
+            $c->get(\App\Services\MeterSessionService::class),
+            $c->get(LoggerInterface::class)
+        );
+    },
+]);
 
-$router->add('POST', '/api/meterdiag_list', static fn(Request $req, array $params) => $meterController->meterDiagList($req));
-$router->add('POST', '/api/meterdiag_report', static fn(Request $req, array $params) => $meterController->meterDiagReport($req));
+$container = $containerBuilder->build();
 
-$router->add('POST', '/api/firmware', static fn(Request $req, array $params) => $firmwareController->checkUpdate($req));
-$router->add('GET', '/api/firmware/{id}', static fn(Request $req, array $params) => $firmwareController->download($params));
+// Create App
+AppFactory::setContainer($container);
+$app = AppFactory::create();
 
-$router->add('POST', '/api/android', static fn(Request $req, array $params) => $appUpdateController->check($req));
-$router->add('GET', '/api/android/{id}', static fn(Request $req, array $params) => $appUpdateController->download($params));
+// Add body parsing middleware
+$app->addBodyParsingMiddleware();
 
-$router->add('GET', '/admin', static fn(Request $req, array $params) => $adminController->dashboard($req));
-$router->add('POST', '/admin', static fn(Request $req, array $params) => $adminController->dashboard($req));
-$router->add('GET', '/index.php', static fn(Request $req, array $params) => $adminController->dashboard($req));
-$router->add('POST', '/index.php', static fn(Request $req, array $params) => $adminController->dashboard($req));
-$router->add('GET', '/api/admin/metrics', static fn(Request $req, array $params) => $adminController->metrics($req));
+// Add CORS middleware
+$app->add(new \App\Middleware\CorsMiddleware($container->get('security')['cors_origin'] ?? '*'));
 
-try {
-    $response = $router->dispatch(Request::fromGlobals());
-    $response->send();
-} catch (Throwable $exception) {
-    $logger->error('Unhandled exception', [
-        'message' => $exception->getMessage(),
-        'trace' => $exception->getTraceAsString(),
-    ]);
+// Add error middleware
+$app->add(new \App\Middleware\ErrorMiddleware(
+    $container->get(LoggerInterface::class),
+    $container->get('settings')['displayErrorDetails'] ?? false
+));
 
-    http_response_code(500);
-    header('Content-Type: application/json');
-    echo json_encode(['ok' => false, 'error' => 'Internal server error']);
-}
+// Add routing middleware
+$app->addRoutingMiddleware();
+
+// Register routes
+(require __DIR__ . '/../routes/api.php')($app);
+(require __DIR__ . '/../routes/admin.php')($app);
+
+// Run
+$app->run();

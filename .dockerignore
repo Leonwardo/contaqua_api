@@ -1,9 +1,0 @@
-.git
-.gitignore
-.env
-.env.*
-/vendor
-/storage/logs
-node_modules
-*.log
-README.md

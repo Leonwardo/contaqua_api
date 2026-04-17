@@ -1,12 +1,35 @@
-.env
-.env.*
-!.env.example
-
+# Dependencies
 /vendor/
-/storage/logs/
-*.log
+composer.phar
 
-/.idea/
-/.vscode/
+# Environment
+.env.local
+.env.*.local
+
+# Logs
+/logs/*.log
+/logs/*.txt
+/logs/archive/
+
+# Uploads (except .gitkeep)
+/storage/uploads/*
+!/storage/uploads/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
 .DS_Store
-Thumbs.db
+
+# Cache
+/cache/
+/tmp/
+
+# Test coverage
+/coverage/
+.phpunit.result.cache
+
+# Docker
+/docker/data/

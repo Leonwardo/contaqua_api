@@ -4,187 +4,289 @@ declare(strict_types=1);
 
 namespace App\Controllers;
 
-use App\Database\MongoCollections;
-use App\Http\Request;
-use App\Http\Response;
 use App\Services\MeterAuthService;
 use App\Services\MeterConfigService;
 use App\Services\MeterSessionService;
 use App\Services\UserAuthService;
+use MongoDB\BSON\ObjectId;
+use Psr\Http\Message\ResponseInterface as Response;
+use Psr\Http\Message\ServerRequestInterface as Request;
+use Psr\Log\LoggerInterface;
 
-final class MeterController
+class MeterController
 {
     public function __construct(
         private MeterAuthService $meterAuthService,
         private MeterConfigService $meterConfigService,
         private MeterSessionService $meterSessionService,
-        private MongoCollections $collections,
-        private UserAuthService $userAuthService
+        private UserAuthService $userAuthService,
+        private LoggerInterface $logger
     ) {
     }
-
-    public function authorize(Request $request): Response
+    
+    /**
+     * Authorize meter access
+     * POST /api/meter/authorize
+     */
+    public function authorize(Request $request, Response $response): Response
     {
-        $authKey = (string) $request->input('authkey', '');
-        $user = (string) $request->input('user', '');
-        $meterId = (string) $request->input('meterid', '');
-
+        $data = $request->getParsedBody() ?? [];
+        $authKey = (string) ($data['authkey'] ?? '');
+        $user = (string) ($data['user'] ?? '');
+        $meterId = (string) ($data['meterid'] ?? '');
+        
         if ($authKey === '' || $user === '' || $meterId === '') {
-            return Response::json(['ok' => false, 'error' => 'authkey, user, meterid are required'], 400);
+            $response->getBody()->write(json_encode([
+                'ok' => false,
+                'error' => 'authkey, user, meterid are required',
+            ]));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
         }
-
-        $document = $this->meterAuthService->authorize($authKey, $user, $meterId);
-        if ($document === null) {
-            return Response::json(['ok' => false, 'authorized' => false], 403);
+        
+        $meter = $this->meterAuthService->authorize($authKey, $user, $meterId);
+        
+        if ($meter === null) {
+            $response->getBody()->write(json_encode([
+                'ok' => false,
+                'authorized' => false,
+            ]));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(403);
         }
-
-        return Response::json(['ok' => true, 'authorized' => true, 'record' => $document]);
+        
+        $response->getBody()->write(json_encode([
+            'ok' => true,
+            'authorized' => true,
+            'record' => [
+                'deveui' => $meter->deveui,
+                'valid_until' => $meter->valid_until?->format('Y-m-d H:i:s'),
+            ],
+        ]));
+        
+        return $response->withHeader('Content-Type', 'application/json');
     }
-
-    // Legacy endpoint expected by current app: POST /api/meter_token
-    public function meterToken(Request $request): Response
+    
+    /**
+     * Generate meter token (legacy endpoint)
+     * POST /api/meter_token
+     */
+    public function meterToken(Request $request, Response $response): Response
     {
-        $userToken = (string) $request->input('token', '');
-        $challenge = (string) $request->input('challenge', '');
-        $deveui = (string) $request->input('deveui', '');
-
+        $data = $request->getParsedBody() ?? [];
+        $userToken = (string) ($data['token'] ?? '');
+        $challenge = (string) ($data['challenge'] ?? '');
+        $deveui = (string) ($data['deveui'] ?? '');
+        
         if ($userToken === '' || $challenge === '' || $deveui === '') {
-            return Response::text('unable to retrieve token', 401);
+            $response->getBody()->write('unable to retrieve token');
+            return $response->withStatus(401);
         }
-
+        
         $token = $this->meterAuthService->generateMeterToken($userToken, $challenge, $deveui);
+        
         if ($token === null) {
-            return Response::text('unable to retrieve token', 401);
+            $response->getBody()->write('unable to retrieve token');
+            return $response->withStatus(401);
         }
-
-        return Response::text('"' . $token . '"', 200);
+        
+        $response->getBody()->write('"' . $token . '"');
+        return $response;
     }
-
-    public function config(Request $request): Response
+    
+    /**
+     * Get meter configs
+     * POST /api/meter/config
+     */
+    public function config(Request $request, Response $response): Response
     {
-        $user = (string) $request->input('user', '');
-        $meterId = (string) $request->input('meterid', $request->input('deveui', ''));
-
+        $data = $request->getParsedBody() ?? [];
+        $user = (string) ($data['user'] ?? '');
+        $meterId = (string) ($data['meterid'] ?? $data['deveui'] ?? '');
+        
         if ($user === '' || $meterId === '') {
-            return Response::json(['ok' => false, 'error' => 'user and meterid are required'], 400);
+            $response->getBody()->write(json_encode([
+                'ok' => false,
+                'error' => 'user and meterid are required',
+            ]));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
         }
-
+        
         $configs = $this->meterConfigService->getAllowedConfigs($user, $meterId);
-
-        return Response::json([
+        
+        $response->getBody()->write(json_encode([
             'ok' => true,
             'count' => count($configs),
-            'configs' => $configs,
-        ]);
+            'configs' => array_map(fn($c) => [
+                'id' => $c->_id ? (string) $c->_id : null,
+                'name' => $c->name,
+                'category' => $c->category,
+                'description' => $c->description,
+            ], $configs),
+        ]));
+        
+        return $response->withHeader('Content-Type', 'application/json');
     }
-
-    // Legacy endpoint expected by current app: POST /api/config
-    public function configLegacy(Request $request): Response
+    
+    /**
+     * Legacy config endpoint
+     * POST /api/config
+     */
+    public function configLegacy(Request $request, Response $response): Response
     {
-        $token = (string) $request->input('token', '');
-        $deveui = (string) $request->input('deveui', '');
-        $category = strtolower((string) $request->input('category', 'general'));
-
+        $data = $request->getParsedBody() ?? [];
+        $token = (string) ($data['token'] ?? '');
+        $deveui = (string) ($data['deveui'] ?? '');
+        $category = strtolower((string) ($data['category'] ?? 'general'));
+        
         if ($token === '' || $deveui === '') {
-            return Response::text('[]', 401);
+            $response->getBody()->write('[]');
+            return $response->withStatus(401);
         }
-
-        $userDocument = $this->userAuthService->validateToken($token);
-        if ($userDocument === null) {
-            return Response::text('[]', 401);
+        
+        $user = $this->userAuthService->validateToken($token);
+        if ($user === null) {
+            $response->getBody()->write('[]');
+            return $response->withStatus(401);
         }
-
-        $user = (string) ($userDocument['user'] ?? $userDocument['username'] ?? '');
-
-        $configs = $this->meterConfigService->getAllowedConfigs($user, $deveui);
+        
+        $configs = $this->meterConfigService->getAllowedConfigs($user->user, $deveui);
+        
         $result = [];
         foreach ($configs as $config) {
-            if (isset($config['category']) && strtolower((string) $config['category']) !== $category) {
+            if ($config->category !== $category) {
                 continue;
             }
-
-            $id = (string) ($config['_id'] ?? '');
-            $name = (string) ($config['name'] ?? 'config_' . $id);
+            
+            $id = (string) ($config->_id ?? '');
             $result[] = [
                 'id' => $id,
-                'name' => $name,
+                'name' => $config->name ?: 'config_' . $id,
                 'path' => '/api/config/' . $id,
-                'description' => (string) ($config['description'] ?? ''),
+                'description' => $config->description ?? '',
             ];
         }
-
-        return Response::text(json_encode($result, JSON_UNESCAPED_SLASHES) ?: '[]', 200);
+        
+        $response->getBody()->write(json_encode($result, JSON_UNESCAPED_SLASHES));
+        return $response;
     }
-
-    public function configFile(array $params): Response
+    
+    /**
+     * Get config file content
+     * GET /api/config/{id}
+     */
+    public function configFile(Request $request, Response $response, string $id): Response
     {
-        $id = $params['id'] ?? '';
-        if ($id === '') {
-            return Response::text('Not found', 404);
+        $config = $this->meterConfigService->getById($id);
+        
+        if ($config === null) {
+            $response->getBody()->write('Not found');
+            return $response->withStatus(404);
         }
-
-        try {
-            $objectId = new \MongoDB\BSON\ObjectId($id);
-        } catch (\Throwable) {
-            return Response::text('Not found', 404);
-        }
-
-        $document = $this->collections->meterConfig()->findOne(['_id' => $objectId]);
-        if (!is_array($document)) {
-            return Response::text('Not found', 404);
-        }
-
-        $content = (string) ($document['file_content'] ?? $document['content'] ?? '');
+        
+        $content = $config->file_content;
         if ($content === '') {
-            return Response::text('No content', 404);
+            $response->getBody()->write('No content');
+            return $response->withStatus(404);
         }
-
-        return new Response(200, $content, ['Content-Type' => 'text/plain; charset=utf-8']);
+        
+        $response->getBody()->write($content);
+        return $response->withHeader('Content-Type', 'text/plain; charset=utf-8');
     }
-
-    public function session(Request $request): Response
+    
+    /**
+     * Store meter session
+     * POST /api/meter/session
+     */
+    public function session(Request $request, Response $response): Response
     {
-        $payload = $request->body;
-        if ($payload === []) {
-            return Response::json(['ok' => false, 'error' => 'payload is required'], 400);
+        $payload = $request->getParsedBody() ?? [];
+        $token = (string) ($payload['token'] ?? $this->getBearerToken($request));
+        
+        // Validate token
+        $user = $this->userAuthService->validateToken($token);
+        if ($token === '' || $user === null) {
+            $response->getBody()->write(json_encode([
+                'ok' => false,
+                'error' => 'invalid token',
+            ]));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(401);
         }
-
-        $token = (string) ($payload['token'] ?? $request->input('token', ''));
-        if ($token === '' || $this->userAuthService->validateToken($token) === null) {
-            return Response::json(['ok' => false, 'error' => 'invalid token'], 401);
-        }
-
+        
         try {
-            $stored = $this->meterSessionService->storeSession($payload);
-        } catch (\InvalidArgumentException $exception) {
-            return Response::json(['ok' => false, 'error' => $exception->getMessage()], 400);
+            $stored = $this->meterSessionService->storeSession($payload, $token);
+            
+            $response->getBody()->write(json_encode([
+                'ok' => true,
+                'stored' => $stored,
+            ]));
+            
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(201);
+        } catch (\InvalidArgumentException $e) {
+            $response->getBody()->write(json_encode([
+                'ok' => false,
+                'error' => $e->getMessage(),
+            ]));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
+        } catch (\Exception $e) {
+            $this->logger->error('Error storing session', ['error' => $e->getMessage()]);
+            $response->getBody()->write(json_encode([
+                'ok' => false,
+                'error' => 'Internal server error',
+            ]));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(500);
         }
-
-        return Response::json(['ok' => true] + $stored, 201);
     }
-
-    public function meterDiagList(Request $request): Response
+    
+    /**
+     * Get diagnostic list (legacy)
+     * POST /api/meterdiag_list
+     */
+    public function meterDiagList(Request $request, Response $response): Response
     {
-        $deveui = (string) $request->input('deveui', '');
-        $token = (string) $request->input('token', '');
-        if ($deveui === '' || $token === '' || $this->userAuthService->validateToken($token) === null) {
-            return Response::text('', 401);
+        $data = $request->getParsedBody() ?? [];
+        $deveui = (string) ($data['deveui'] ?? '');
+        $token = (string) ($data['token'] ?? '');
+        
+        if ($deveui === '' || $token === '') {
+            return $response->withStatus(401);
         }
-
-        $document = $this->collections->meterConfig()->findOne(['diagnostic_for' => $deveui]);
-        if (!is_array($document)) {
-            return Response::text('', 200);
+        
+        if ($this->userAuthService->validateToken($token) === null) {
+            return $response->withStatus(401);
         }
-
-        return Response::text((string) ($document['diagnostic_script'] ?? ''), 200);
+        
+        $script = $this->meterConfigService->getDiagnosticScript($deveui);
+        
+        $response->getBody()->write($script ?? '');
+        return $response;
     }
-
-    public function meterDiagReport(Request $request): Response
+    
+    /**
+     * Submit diagnostic report (legacy)
+     * POST /api/meterdiag_report
+     */
+    public function meterDiagReport(Request $request, Response $response): Response
     {
-        $token = (string) $request->input('token', '');
+        $data = $request->getParsedBody() ?? [];
+        $token = (string) ($data['token'] ?? '');
+        
         if ($token === '' || $this->userAuthService->validateToken($token) === null) {
-            return Response::text('unauthorized', 401);
+            $response->getBody()->write('unauthorized');
+            return $response->withStatus(401);
         }
-        return Response::text('ok', 200);
+        
+        $response->getBody()->write('ok');
+        return $response;
+    }
+    
+    /**
+     * Extract Bearer token from Authorization header
+     */
+    private function getBearerToken(Request $request): string
+    {
+        $authHeader = $request->getHeaderLine('Authorization');
+        if (preg_match('/Bearer\s+(.+)/', $authHeader, $matches)) {
+            return $matches[1];
+        }
+        return '';
     }
 }

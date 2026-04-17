@@ -4,273 +4,324 @@ declare(strict_types=1);
 
 namespace App\Controllers;
 
-use App\Admin\AdminView;
-use App\Http\Request;
-use App\Http\Response;
 use App\Services\AdminService;
+use App\Views\AdminView;
+use Psr\Http\Message\ResponseInterface as Response;
+use Psr\Http\Message\ServerRequestInterface as Request;
+use Psr\Log\LoggerInterface;
 
-final class AdminController
+class AdminController
 {
     public function __construct(
         private AdminService $adminService,
-        private string $adminToken
+        private string $adminToken,
+        private LoggerInterface $logger
     ) {
     }
-
-    public function dashboard(Request $request): Response
+    
+    /**
+     * Admin dashboard
+     * GET /admin
+     */
+    public function dashboard(Request $request, Response $response): Response
     {
         if (!$this->isAuthorized($request)) {
-            return new Response(401, AdminView::unauthorized(), ['Content-Type' => 'text/html; charset=utf-8']);
+            $html = AdminView::login();
+            $response->getBody()->write($html);
+            return $response->withHeader('Content-Type', 'text/html; charset=utf-8')->withStatus(401);
         }
-
-        $currentAdminToken = (string) ($request->input('admin_token', $request->bearerToken() ?? ''));
         
-        // Check if requesting a specific page
-        $page = (string) $request->input('page', '');
+        // Handle POST actions (AJAX)
+        if ($request->getMethod() === 'POST') {
+            return $this->handleAction($request, $response);
+        }
+        
+        // Handle page routing
+        $queryParams = $request->getQueryParams();
+        $page = $queryParams['page'] ?? '';
+        
         if ($page === 'users') {
-            return $this->usersPage($request, $currentAdminToken);
+            return $this->usersPage($request, $response);
         }
+        
         if ($page === 'meters') {
-            return $this->metersPage($request, $currentAdminToken);
+            return $this->metersPage($request, $response);
         }
-
-        if ($request->method === 'POST') {
-            $flash = 'Operação concluída.';
-            $flashType = 'success';
-
-            try {
-                $action = (string) $request->input('action', '');
-                if ($action === 'create_user') {
-                    $password = (string) $request->input('pass', '');
-                    $result = $this->adminService->createUser(
-                        (string) $request->input('user', ''),
-                        $password,
-                        (string) $request->input('role', 'technician'),
-                        (int) $request->input('valid_days', 365)
-                    );
-                    $flash = 'Utilizador criado com sucesso.';
-                    // Store user data for success modal
-                    $result['password'] = $password; // Add password for display
-                    $state['show_user_success'] = true;
-                    $state['user_data'] = $result;
-                } elseif ($action === 'create_meter') {
-                    $result = $this->adminService->createMeterLink(
-                        (string) $request->input('meterid', ''),
-                        (string) $request->input('users_csv', ''),
-                        (int) $request->input('valid_days', 365)
-                    );
-                    $flash = 'Contador ' . (string) ($result['deveui'] ?? '') . ' associado com sucesso.';
-                    // Store meter data for success modal
-                    $state['show_meter_success'] = true;
-                    $state['meter_data'] = $result;
-                } elseif ($action === 'bulk_import_meters') {
-                    $result = $this->adminService->importMeterList(
-                        (string) $request->input('users_csv', ''),
-                        (string) $request->input('meter_list', ''),
-                        (int) $request->input('valid_days', 365)
-                    );
-                    $flash = 'Importação concluída: ' . (int) ($result['created_or_updated'] ?? 0)
-                        . ' guardados, ' . (int) ($result['skipped'] ?? 0) . ' ignorados.';
-                } elseif ($action === 'generate_user_qr') {
-                    $flash = 'Use o botão QR na linha do utilizador para abrir o modal.';
-                } elseif ($action === 'update_user') {
-                    $this->adminService->updateUser(
-                        (string) $request->input('user', ''),
-                        (string) $request->input('role', ''),
-                        (string) $request->input('pass', '')
-                    );
-                    $flash = 'Utilizador atualizado com sucesso.';
-                } elseif ($action === 'delete_user') {
-                    $this->adminService->deleteUser((string) $request->input('user', ''));
-                    $flash = 'Utilizador eliminado com sucesso.';
-                } elseif ($action === 'assign_meter_users') {
-                    $this->adminService->assignMeterUsers(
-                        (string) $request->input('meterid', ''),
-                        (string) $request->input('users_csv', '')
-                    );
-                    $flash = 'Atribuições do contador atualizadas.';
-                } elseif ($action === 'delete_meter') {
-                    $this->adminService->deleteMeter((string) $request->input('meterid', ''));
-                    $flash = 'Contador eliminado com sucesso.';
-                }
-            } catch (\Throwable $exception) {
-                $flash = 'Erro: ' . $exception->getMessage();
-                $flashType = 'error';
-            }
-
-            // Return JSON response for AJAX handling
-            $responseData = [
-                'success' => $flashType === 'success',
-                'message' => $flash,
-                'type' => $flashType
-            ];
-            
-            // Include user/meter data for modals if available
-            if (!empty($state['user_data'])) {
-                $responseData['user_data'] = $state['user_data'];
-            }
-            if (!empty($state['meter_data'])) {
-                $responseData['meter_data'] = $state['meter_data'];
-            }
-            
-            return new Response(200, json_encode($responseData), ['Content-Type' => 'application/json']);
-        }
-
-        $flash = trim((string) $request->input('flash', ''));
-        $flashType = strtolower(trim((string) $request->input('flash_type', 'success')));
-        if ($flashType !== 'success' && $flashType !== 'error') {
-            $flashType = 'success';
-        }
-
-        try {
-            $counts = $this->adminService->counts();
-            $sessions = $this->adminService->latestSessions();
-            $users = $this->adminService->listUsers();
-            $meters = $this->adminService->listMeters();
-        } catch (\Throwable $exception) {
-            $counts = [
-                'user_auth' => 0,
-                'meter_auth' => 0,
-                'meter_config' => 0,
-                'meter_session' => 0,
-            ];
-            $sessions = [];
-            $users = [];
-            $meters = [];
-            $flash = 'Erro ao carregar dados do painel: ' . $exception->getMessage();
-            $flashType = 'error';
-        }
-
-        $html = AdminView::dashboard(
-            $counts,
-            $sessions,
-            $users,
-            $meters,
-            [
-                'flash' => $flash,
-                'flash_type' => $flashType,
-                'admin_token' => $currentAdminToken,
-                'roles' => $this->adminService->availableRoles(),
-                'show_user_success' => $state['show_user_success'] ?? false,
-                'user_data' => $state['user_data'] ?? null,
-                'show_meter_success' => $state['show_meter_success'] ?? false,
-                'meter_data' => $state['meter_data'] ?? null,
-            ]
-        );
-
-        return new Response(200, $html, ['Content-Type' => 'text/html; charset=utf-8']);
+        
+        // Default dashboard
+        $token = $this->getToken($request);
+        $counts = $this->adminService->getCounts();
+        $sessions = $this->adminService->getLatestSessions(20);
+        
+        $html = AdminView::dashboard([
+            'counts' => $counts,
+            'sessions' => $sessions,
+            'admin_token' => $token,
+        ]);
+        
+        $response->getBody()->write($html);
+        return $response->withHeader('Content-Type', 'text/html; charset=utf-8');
     }
-
-    public function metrics(Request $request): Response
+    
+    /**
+     * Admin metrics API
+     * GET /api/admin/metrics
+     */
+    public function metrics(Request $request, Response $response): Response
     {
         if (!$this->isAuthorized($request)) {
-            return Response::json(['ok' => false, 'error' => 'Unauthorized'], 401);
-        }
-
-        try {
-            return Response::json([
-                'ok' => true,
-                'counts' => $this->adminService->counts(),
-                'latest_sessions' => $this->adminService->latestSessions(),
-                'users' => $this->adminService->listUsers(),
-                'meters' => $this->adminService->listMeters(),
-            ]);
-        } catch (\Throwable $exception) {
-            return Response::json([
+            $response->getBody()->write(json_encode([
                 'ok' => false,
-                'error' => 'Falha ao carregar métricas admin: ' . $exception->getMessage(),
-            ], 503);
+                'error' => 'Unauthorized',
+            ]));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(401);
         }
+        
+        $data = [
+            'ok' => true,
+            'counts' => $this->adminService->getCounts(),
+            'latest_sessions' => $this->adminService->getLatestSessions(50),
+            'users' => $this->adminService->getUsers(),
+            'meters' => $this->adminService->getMeters(),
+        ];
+        
+        $response->getBody()->write(json_encode($data));
+        return $response->withHeader('Content-Type', 'application/json');
     }
-
+    
+    /**
+     * Users management page
+     */
+    private function usersPage(Request $request, Response $response): Response
+    {
+        $token = $this->getToken($request);
+        $queryParams = $request->getQueryParams();
+        
+        $search = $queryParams['search'] ?? '';
+        $role = $queryParams['role'] ?? '';
+        $page = max(1, (int) ($queryParams['page_num'] ?? 1));
+        
+        $users = $this->adminService->getUsers();
+        
+        // Apply filters
+        if ($search !== '') {
+            $searchLower = strtolower($search);
+            $users = array_filter($users, function($user) use ($searchLower) {
+                return str_contains(strtolower($user['user']), $searchLower) ||
+                       str_contains(strtolower((string)$user['user_id']), $searchLower);
+            });
+        }
+        
+        if ($role !== '') {
+            $roleMap = ['TECHNICIAN' => 1, 'MANAGER' => 2, 'MANUFACTURER' => 3, 'FACTORY' => 4];
+            $access = $roleMap[strtoupper($role)] ?? 0;
+            $users = array_filter($users, function($user) use ($access) {
+                return (int)($user['access'] ?? 0) === $access;
+            });
+        }
+        
+        $total = count($users);
+        $limit = 50;
+        $offset = ($page - 1) * $limit;
+        $users = array_slice($users, $offset, $limit);
+        
+        $html = AdminView::users([
+            'users' => $users,
+            'search' => $search,
+            'role' => $role,
+            'page' => $page,
+            'total' => $total,
+            'per_page' => $limit,
+            'admin_token' => $token,
+            'roles' => $this->adminService->getRoles(),
+        ]);
+        
+        $response->getBody()->write($html);
+        return $response->withHeader('Content-Type', 'text/html; charset=utf-8');
+    }
+    
+    /**
+     * Meters management page
+     */
+    private function metersPage(Request $request, Response $response): Response
+    {
+        $token = $this->getToken($request);
+        $queryParams = $request->getQueryParams();
+        
+        $search = $queryParams['search'] ?? '';
+        $page = max(1, (int) ($queryParams['page_num'] ?? 1));
+        
+        $meters = $this->adminService->getMeters();
+        
+        // Apply filters
+        if ($search !== '') {
+            $searchLower = strtolower($search);
+            $meters = array_filter($meters, function($meter) use ($searchLower) {
+                return str_contains(strtolower($meter['deveui']), $searchLower) ||
+                       str_contains(strtolower(implode(' ', $meter['assigned_users'] ?? [])), $searchLower);
+            });
+        }
+        
+        $total = count($meters);
+        $limit = 50;
+        $offset = ($page - 1) * $limit;
+        $meters = array_slice($meters, $offset, $limit);
+        
+        $html = AdminView::meters([
+            'meters' => $meters,
+            'search' => $search,
+            'page' => $page,
+            'total' => $total,
+            'per_page' => $limit,
+            'admin_token' => $token,
+            'users' => array_column($this->adminService->getUsers(), 'user'),
+        ]);
+        
+        $response->getBody()->write($html);
+        return $response->withHeader('Content-Type', 'text/html; charset=utf-8');
+    }
+    
+    /**
+     * Handle POST actions
+     */
+    private function handleAction(Request $request, Response $response): Response
+    {
+        $data = $request->getParsedBody() ?? [];
+        $action = $data['action'] ?? '';
+        
+        $result = [
+            'success' => false,
+            'message' => 'Unknown action',
+            'type' => 'error',
+        ];
+        
+        try {
+            switch ($action) {
+                case 'create_user':
+                    $userData = $this->adminService->createUser(
+                        (string) ($data['user'] ?? ''),
+                        (string) ($data['pass'] ?? ''),
+                        (string) ($data['role'] ?? 'TECHNICIAN'),
+                        null,
+                        (int) ($data['valid_days'] ?? 365)
+                    );
+                    $result = [
+                        'success' => true,
+                        'message' => 'Utilizador criado com sucesso',
+                        'type' => 'success',
+                        'user_data' => $userData,
+                    ];
+                    break;
+                    
+                case 'update_user':
+                    $this->adminService->updateUser(
+                        (string) ($data['user'] ?? ''),
+                        (string) ($data['role'] ?? ''),
+                        (string) ($data['pass'] ?? '')
+                    );
+                    $result = [
+                        'success' => true,
+                        'message' => 'Utilizador atualizado com sucesso',
+                        'type' => 'success',
+                    ];
+                    break;
+                    
+                case 'delete_user':
+                    $this->adminService->deleteUser((string) ($data['user'] ?? ''));
+                    $result = [
+                        'success' => true,
+                        'message' => 'Utilizador eliminado com sucesso',
+                        'type' => 'success',
+                    ];
+                    break;
+                    
+                case 'create_meter':
+                    $meterData = $this->adminService->createOrUpdateMeter(
+                        (string) ($data['meterid'] ?? ''),
+                        (string) ($data['users_csv'] ?? ''),
+                        (int) ($data['valid_days'] ?? 365)
+                    );
+                    $result = [
+                        'success' => true,
+                        'message' => 'Contador ' . $meterData['deveui'] . ' associado com sucesso',
+                        'type' => 'success',
+                        'meter_data' => $meterData,
+                    ];
+                    break;
+                    
+                case 'assign_meter_users':
+                    $this->adminService->assignMeterUsers(
+                        (string) ($data['meterid'] ?? ''),
+                        (string) ($data['users_csv'] ?? '')
+                    );
+                    $result = [
+                        'success' => true,
+                        'message' => 'Atribuições do contador atualizadas',
+                        'type' => 'success',
+                    ];
+                    break;
+                    
+                case 'delete_meter':
+                    $this->adminService->deleteMeter((string) ($data['meterid'] ?? ''));
+                    $result = [
+                        'success' => true,
+                        'message' => 'Contador eliminado com sucesso',
+                        'type' => 'success',
+                    ];
+                    break;
+                    
+                case 'bulk_import_meters':
+                    $importResult = $this->adminService->bulkImportMeters(
+                        (string) ($data['users_csv'] ?? ''),
+                        (string) ($data['meter_list'] ?? ''),
+                        (int) ($data['valid_days'] ?? 365)
+                    );
+                    $result = [
+                        'success' => true,
+                        'message' => "Importação concluída: {$importResult['created_or_updated']} guardados, {$importResult['skipped']} ignorados",
+                        'type' => 'success',
+                    ];
+                    break;
+            }
+        } catch (\Throwable $e) {
+            $this->logger->error('Admin action failed', ['action' => $action, 'error' => $e->getMessage()]);
+            $result = [
+                'success' => false,
+                'message' => 'Erro: ' . $e->getMessage(),
+                'type' => 'error',
+            ];
+        }
+        
+        $response->getBody()->write(json_encode($result));
+        return $response->withHeader('Content-Type', 'application/json');
+    }
+    
+    /**
+     * Check if request is authorized
+     */
     private function isAuthorized(Request $request): bool
     {
-        $token = (string) ($request->input('admin_token', $request->bearerToken() ?? ''));
+        $token = $this->getToken($request);
         return $token !== '' && hash_equals($this->adminToken, $token);
     }
-
-    private function usersPage(Request $request, string $adminToken): Response
+    
+    /**
+     * Get admin token from request
+     */
+    private function getToken(Request $request): string
     {
-        $search = (string) $request->input('search', '');
-        $role = (string) $request->input('role', '');
-        $page = max(1, (int) $request->input('page_num', 1));
-        $limit = 50;
-        $offset = ($page - 1) * $limit;
-
-        try {
-            $users = $this->adminService->listUsers(1000); // Get all for filtering
-            $totalCount = count($users);
-            
-            // Apply filters
-            if ($search !== '') {
-                $searchLower = strtolower($search);
-                $users = array_filter($users, function($user) use ($searchLower) {
-                    return str_contains(strtolower($user['user'] ?? ''), $searchLower) ||
-                           str_contains(strtolower((string)($user['user_id'] ?? '')), $searchLower);
-                });
+        $queryParams = $request->getQueryParams();
+        $body = $request->getParsedBody() ?? [];
+        
+        $token = (string) ($queryParams['admin_token'] ?? $body['admin_token'] ?? '');
+        
+        if ($token === '') {
+            $authHeader = $request->getHeaderLine('Authorization');
+            if (preg_match('/Bearer\s+(.+)/', $authHeader, $matches)) {
+                $token = $matches[1];
             }
-            
-            if ($role !== '') {
-                $roleMap = ['TECHNICIAN' => 1, 'MANAGER' => 2, 'MANUFACTURER' => 3, 'FACTORY' => 4];
-                $access = $roleMap[strtoupper($role)] ?? 0;
-                $users = array_filter($users, function($user) use ($access) {
-                    return (int)($user['access'] ?? 0) === $access;
-                });
-            }
-            
-            $filteredCount = count($users);
-            $users = array_slice($users, $offset, $limit);
-            
-            $html = AdminView::usersList($users, [
-                'search' => $search,
-                'role' => $role,
-                'page' => $page,
-                'total_count' => $filteredCount,
-                'per_page' => $limit,
-                'admin_token' => $adminToken,
-                'roles' => $this->adminService->availableRoles(),
-            ]);
-            
-            return new Response(200, $html, ['Content-Type' => 'text/html; charset=utf-8']);
-        } catch (\Throwable $exception) {
-            return new Response(500, 'Erro: ' . $exception->getMessage(), ['Content-Type' => 'text/plain']);
         }
-    }
-
-    private function metersPage(Request $request, string $adminToken): Response
-    {
-        $search = (string) $request->input('search', '');
-        $page = max(1, (int) $request->input('page_num', 1));
-        $limit = 50;
-        $offset = ($page - 1) * $limit;
-
-        try {
-            $meters = $this->adminService->listMeters(1000); // Get all for filtering
-            $totalCount = count($meters);
-            
-            // Apply filters
-            if ($search !== '') {
-                $searchLower = strtolower($search);
-                $meters = array_filter($meters, function($meter) use ($searchLower) {
-                    return str_contains(strtolower($meter['deveui'] ?? ''), $searchLower) ||
-                           str_contains(strtolower(implode(' ', $meter['assigned_users'] ?? [])), $searchLower);
-                });
-            }
-            
-            $filteredCount = count($meters);
-            $meters = array_slice($meters, $offset, $limit);
-            
-            $html = AdminView::metersList($meters, [
-                'search' => $search,
-                'page' => $page,
-                'total_count' => $filteredCount,
-                'per_page' => $limit,
-                'admin_token' => $adminToken,
-            ]);
-            
-            return new Response(200, $html, ['Content-Type' => 'text/html; charset=utf-8']);
-        } catch (\Throwable $exception) {
-            return new Response(500, 'Erro: ' . $exception->getMessage(), ['Content-Type' => 'text/plain']);
-        }
+        
+        return $token;
     }
 }

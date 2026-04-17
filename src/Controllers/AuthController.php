@@ -4,51 +4,96 @@ declare(strict_types=1);
 
 namespace App\Controllers;
 
-use App\Http\Request;
-use App\Http\Response;
 use App\Services\UserAuthService;
+use Psr\Http\Message\ResponseInterface as Response;
+use Psr\Http\Message\ServerRequestInterface as Request;
+use Psr\Log\LoggerInterface;
 
-final class AuthController
+class AuthController
 {
-    public function __construct(private UserAuthService $userAuthService)
-    {
+    public function __construct(
+        private UserAuthService $userAuthService,
+        private LoggerInterface $logger
+    ) {
     }
-
-    public function validate(Request $request): Response
+    
+    /**
+     * Validate user token
+     * POST /api/auth/validate
+     */
+    public function validate(Request $request, Response $response): Response
     {
-        $token = (string) ($request->input('token', $request->bearerToken() ?? ''));
-
+        $data = $request->getParsedBody() ?? [];
+        $token = (string) ($data['token'] ?? $this->getBearerToken($request));
+        
         if ($token === '') {
-            return Response::json(['ok' => false, 'error' => 'token is required'], 400);
+            $response->getBody()->write(json_encode([
+                'ok' => false,
+                'error' => 'token is required',
+            ]));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
         }
-
-        $document = $this->userAuthService->validateToken($token);
-        if ($document === null) {
-            return Response::json(['ok' => false, 'authenticated' => false], 401);
+        
+        $user = $this->userAuthService->validateToken($token);
+        
+        if ($user === null) {
+            $response->getBody()->write(json_encode([
+                'ok' => false,
+                'authenticated' => false,
+            ]));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(401);
         }
-
-        return Response::json([
+        
+        $response->getBody()->write(json_encode([
             'ok' => true,
             'authenticated' => true,
-            'user' => $document,
-        ]);
+            'user' => [
+                'user' => $user->user,
+                'user_id' => $user->user_id,
+                'access' => $user->access,
+                'role' => $user->getRole(),
+            ],
+        ]));
+        
+        return $response->withHeader('Content-Type', 'application/json');
     }
-
-    // Legacy endpoint expected by current app: POST /api/user_token
-    public function userToken(Request $request): Response
+    
+    /**
+     * Legacy user login endpoint
+     * POST /api/user_token
+     * Returns plain text token for Android app compatibility
+     */
+    public function userToken(Request $request, Response $response): Response
     {
-        $user = (string) $request->input('user', '');
-        $pass = (string) $request->input('pass', '');
-
+        $data = $request->getParsedBody() ?? [];
+        $user = (string) ($data['user'] ?? '');
+        $pass = (string) ($data['pass'] ?? '');
+        
         if ($user === '' || $pass === '') {
-            return Response::text('Unable to authenticate user', 201);
+            $response->getBody()->write('Unable to authenticate user');
+            return $response->withStatus(201); // Legacy compatibility
         }
-
-        $token = $this->userAuthService->loginAndGetToken($user, $pass);
+        
+        $token = $this->userAuthService->login($user, $pass);
+        
         if ($token === null) {
-            return Response::text('Unable to authenticate user', 201);
+            $response->getBody()->write('Unable to authenticate user');
+            return $response->withStatus(201); // Legacy compatibility
         }
-
-        return Response::text($token, 200);
+        
+        $response->getBody()->write($token);
+        return $response;
+    }
+    
+    /**
+     * Extract Bearer token from Authorization header
+     */
+    private function getBearerToken(Request $request): string
+    {
+        $authHeader = $request->getHeaderLine('Authorization');
+        if (preg_match('/Bearer\s+(.+)/', $authHeader, $matches)) {
+            return $matches[1];
+        }
+        return '';
     }
 }

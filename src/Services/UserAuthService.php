@@ -5,96 +5,214 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Database\MongoCollections;
-use MongoDB\Collection;
+use App\Models\UserAuth;
+use MongoDB\BSON\ObjectId;
+use Psr\Log\LoggerInterface;
 
-final class UserAuthService
+class UserAuthService
 {
     public function __construct(
         private MongoCollections $collections,
-        private Logger $logger
+        private LoggerInterface $logger,
+        private bool $allowLegacyPlainPasswords = false
     ) {
     }
-
-    /** @return array<string, mixed>|null */
-    public function validateToken(string $token): ?array
+    
+    /**
+     * Validate a user token and return the user document
+     */
+    public function validateToken(string $token): ?UserAuth
     {
         $token = strtoupper(trim($token));
         if ($token === '') {
             return null;
         }
-
-        /** @var Collection $collection */
-        $collection = $this->collections->userAuth();
-        $cursor = $collection->find();
-        foreach ($cursor as $document) {
-            if (!is_array($document)) {
-                continue;
+        
+        try {
+            $cursor = $this->collections->userAuth()->find([]);
+            
+            foreach ($cursor as $document) {
+                $user = UserAuth::fromArray($document);
+                
+                if ($user->access <= 0 || $user->user_id <= 0) {
+                    continue;
+                }
+                
+                if ($user->buildToken() === $token) {
+                    $this->logger->debug('Token validated', ['user' => $user->user]);
+                    return $user;
+                }
             }
-
-            $access = (int) ($document['access'] ?? 0);
-            $userId = (int) ($document['user_id'] ?? 0);
-            if ($access <= 0 || $userId <= 0) {
-                continue;
-            }
-
-            if ($this->buildUserToken($access, $userId) !== $token) {
-                continue;
-            }
-
-            return DocumentHelper::normalize($document);
+        } catch (\Exception $e) {
+            $this->logger->error('Error validating token', ['error' => $e->getMessage()]);
         }
-
+        
+        $this->logger->warning('Token validation failed', ['token_prefix' => substr($token, 0, 6)]);
         return null;
     }
-
-    public function loginAndGetToken(string $user, string $pass): ?string
+    
+    /**
+     * Authenticate user and return token
+     */
+    public function login(string $username, string $password): ?string
     {
-        $collection = $this->collections->userAuth();
-
-        $document = $collection->findOne([
-            '$or' => [
-                ['user' => $user],
-            ],
-        ]);
-        if (!is_array($document)) {
-            $this->logger->warning('Login failed: user not found', ['user' => $user]);
-            return null;
-        }
-
-        $storedPass = (string) ($document['pass'] ?? '');
-        $salt = (string) ($document['salt'] ?? '');
-        $hashMatches = $salt !== '' && hash_equals($storedPass, hash('sha256', $salt . ':' . $pass));
-        $legacyPlainMatches = $salt === '' && $storedPass !== '' && hash_equals($storedPass, $pass);
-
-        if (!$hashMatches && !$legacyPlainMatches) {
-            $this->logger->warning('Login failed: wrong password', ['user' => $user]);
-            return null;
-        }
-
-        $access = (int) ($document['access'] ?? 0);
-        $userId = (int) ($document['user_id'] ?? 0);
-        if ($access <= 0 || $userId <= 0) {
-            $this->logger->warning('Login failed: malformed user document', ['user' => $user]);
-            return null;
-        }
-
-        return $this->buildUserToken($access, $userId);
-    }
-
-    private function buildUserToken(int $access, int $userId): string
-    {
-        $tokenBytes = array_fill(0, 9, 0);
-        $tokenBytes[0] = max(0, $access - 1) & 0xFF;
-
-        $userIdString = (string) max(0, $userId);
-        $parseLen = min(3, strlen($userIdString));
-        for ($i = 0; $i < $parseLen; $i++) {
-            $digit = $userIdString[$i];
-            if (ctype_digit($digit)) {
-                $tokenBytes[$i + 1] = (int) $digit;
+        $this->logger->info('Login attempt', ['user' => $username]);
+        
+        try {
+            $document = $this->collections->userAuth()->findOne([
+                'user' => $username,
+            ]);
+            
+            if ($document === null) {
+                $this->logger->warning('Login failed: user not found', ['user' => $username]);
+                return null;
             }
+            
+            $user = UserAuth::fromArray($document);
+            
+            if (!$user->verifyPassword($password, $this->allowLegacyPlainPasswords)) {
+                $this->logger->warning('Login failed: invalid password', ['user' => $username]);
+                return null;
+            }
+            
+            if ($user->access <= 0 || $user->user_id <= 0) {
+                $this->logger->warning('Login failed: malformed user', ['user' => $username]);
+                return null;
+            }
+            
+            $token = $user->buildToken();
+            $this->logger->info('Login successful', ['user' => $username]);
+            
+            return $token;
+        } catch (\Exception $e) {
+            $this->logger->error('Login error', ['user' => $username, 'error' => $e->getMessage()]);
+            return null;
         }
-
-        return strtoupper(bin2hex(pack('C*', ...$tokenBytes)));
+    }
+    
+    /**
+     * Find user by username
+     */
+    public function findByUsername(string $username): ?UserAuth
+    {
+        try {
+            $document = $this->collections->userAuth()->findOne(['user' => $username]);
+            return $document ? UserAuth::fromArray($document) : null;
+        } catch (\Exception $e) {
+            $this->logger->error('Error finding user', ['user' => $username, 'error' => $e->getMessage()]);
+            return null;
+        }
+    }
+    
+    /**
+     * Get all users
+     * @return UserAuth[]
+     */
+    public function getAllUsers(?int $limit = null): array
+    {
+        try {
+            $options = ['sort' => ['user' => 1]];
+            if ($limit !== null) {
+                $options['limit'] = $limit;
+            }
+            
+            $cursor = $this->collections->userAuth()->find([], $options);
+            $users = [];
+            
+            foreach ($cursor as $document) {
+                $users[] = UserAuth::fromArray($document);
+            }
+            
+            return $users;
+        } catch (\Exception $e) {
+            $this->logger->error('Error getting users', ['error' => $e->getMessage()]);
+            return [];
+        }
+    }
+    
+    /**
+     * Create a new user
+     */
+    public function createUser(string $username, string $password, string $role = 'TECHNICIAN', ?int $userId = null): UserAuth
+    {
+        // Check if user exists
+        if ($this->findByUsername($username) !== null) {
+            throw new \InvalidArgumentException("User '{$username}' already exists");
+        }
+        
+        $user = new UserAuth();
+        $user->user = $username;
+        $user->setRole($role);
+        $user->setPassword($password);
+        
+        // Generate user_id if not provided
+        if ($userId === null) {
+            $lastUser = $this->collections->userAuth()->findOne([], ['sort' => ['user_id' => -1]]);
+            $user->user_id = $lastUser ? ((int) $lastUser['user_id'] + 1) : 1;
+        } else {
+            $user->user_id = $userId;
+        }
+        
+        $user->created_at = new \DateTimeImmutable();
+        
+        $result = $this->collections->userAuth()->insertOne($user->toArray());
+        $user->_id = $result->getInsertedId();
+        
+        $this->logger->info('User created', ['user' => $username, 'role' => $role]);
+        
+        return $user;
+    }
+    
+    /**
+     * Update user
+     */
+    public function updateUser(string $username, ?string $role = null, ?string $password = null): void
+    {
+        $user = $this->findByUsername($username);
+        if ($user === null) {
+            throw new \InvalidArgumentException("User '{$username}' not found");
+        }
+        
+        $update = ['updated_at' => new \DateTimeImmutable()];
+        
+        if ($role !== null) {
+            $user->setRole($role);
+            $update['access'] = $user->access;
+        }
+        
+        if ($password !== null && $password !== '') {
+            $user->setPassword($password);
+            $update['pass'] = $user->pass;
+            $update['salt'] = $user->salt;
+        }
+        
+        $this->collections->userAuth()->updateOne(
+            ['_id' => $user->_id],
+            ['$set' => $update]
+        );
+        
+        $this->logger->info('User updated', ['user' => $username]);
+    }
+    
+    /**
+     * Delete user
+     */
+    public function deleteUser(string $username): void
+    {
+        $user = $this->findByUsername($username);
+        if ($user === null) {
+            throw new \InvalidArgumentException("User '{$username}' not found");
+        }
+        
+        $this->collections->userAuth()->deleteOne(['_id' => $user->_id]);
+        $this->logger->info('User deleted', ['user' => $username]);
+    }
+    
+    /**
+     * Count total users
+     */
+    public function count(): int
+    {
+        return $this->collections->userAuth()->countDocuments();
     }
 }
