@@ -94,6 +94,16 @@ $container = $containerBuilder->build();
 AppFactory::setContainer($container);
 $app = AppFactory::create();
 
+// Detect and set base path for subdirectory installations
+// Disabled for testing - uncomment when in production subdirectories
+/*
+$scriptName = $_SERVER['SCRIPT_NAME'] ?? '';
+$basePath = dirname($scriptName);
+if ($basePath !== '/' && $basePath !== '.' && $basePath !== '') {
+    $app->setBasePath($basePath);
+}
+*/
+
 // Add body parsing middleware
 $app->addBodyParsingMiddleware();
 
