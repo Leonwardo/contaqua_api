@@ -2,12 +2,6 @@
 
 declare(strict_types=1);
 
-// Verificar se vendor existe, senão usar fallback
-if (!file_exists(__DIR__ . '/../vendor/autoload.php')) {
-    require __DIR__ . '/index-fallback.php';
-    exit;
-}
-
 use DI\ContainerBuilder;
 use Monolog\Handler\RotatingFileHandler;
 use Monolog\Logger;

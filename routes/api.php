@@ -9,6 +9,11 @@ use Slim\App;
 use Slim\Routing\RouteCollectorProxy;
 
 return function (App $app): void {
+    // Root redirect to admin
+    $app->get('/', function ($request, $response) {
+        return $response->withHeader('Location', '/admin')->withStatus(302);
+    });
+    
     // Health check endpoints
     $app->get('/api/server', [HealthController::class, 'server']);
     $app->get('/api/health', [HealthController::class, 'health']);
