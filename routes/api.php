@@ -14,6 +14,10 @@ return function (App $app): void {
     $app->get('/api/server', [HealthController::class, 'server']);
     $app->get('/api/health', [HealthController::class, 'health']);
     
+    // Legacy root aliases (MeterApp configs without /api in base URL)
+    $app->get('/server', [HealthController::class, 'server']);
+    $app->get('/health', [HealthController::class, 'health']);
+    
     // Authentication endpoints
     $app->group('/api', function (RouteCollectorProxy $group) {
         // User authentication
@@ -39,6 +43,23 @@ return function (App $app): void {
         // Firmware/OTA endpoints (legacy compatibility with MeterApp)
         $group->post('/firmware', [FirmwareController::class, 'listFirmware']);
         $group->post('/firmware/check', [FirmwareController::class, 'checkUpdate']);
+        $group->post('/firmware/update', [FirmwareController::class, 'checkUpdate']);
         $group->get('/firmware/{id}', [FirmwareController::class, 'downloadFirmware']);
     });
+
+    // Legacy root aliases (no /api prefix)
+    $app->post('/auth/validate', [AuthController::class, 'validate']);
+    $app->post('/user_token', [AuthController::class, 'userToken']);
+    $app->post('/meter/authorize', [MeterController::class, 'authorize']);
+    $app->post('/meter_token', [MeterController::class, 'meterToken']);
+    $app->post('/meter/config', [MeterController::class, 'config']);
+    $app->post('/config', [MeterController::class, 'configLegacy']);
+    $app->get('/config/{id}', [MeterController::class, 'configFile']);
+    $app->post('/meter/session', [MeterController::class, 'session']);
+    $app->post('/meterdiag_list', [MeterController::class, 'meterDiagList']);
+    $app->post('/meterdiag_report', [MeterController::class, 'meterDiagReport']);
+    $app->post('/firmware', [FirmwareController::class, 'listFirmware']);
+    $app->post('/firmware/check', [FirmwareController::class, 'checkUpdate']);
+    $app->post('/firmware/update', [FirmwareController::class, 'checkUpdate']);
+    $app->get('/firmware/{id}', [FirmwareController::class, 'downloadFirmware']);
 };
