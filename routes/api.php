@@ -3,17 +3,13 @@
 declare(strict_types=1);
 
 use App\Controllers\AuthController;
+use App\Controllers\FirmwareController;
 use App\Controllers\HealthController;
 use App\Controllers\MeterController;
 use Slim\App;
 use Slim\Routing\RouteCollectorProxy;
 
 return function (App $app): void {
-    // Root redirect to admin
-    $app->get('/', function ($request, $response) {
-        return $response->withHeader('Location', '/admin')->withStatus(302);
-    });
-    
     // Health check endpoints
     $app->get('/api/server', [HealthController::class, 'server']);
     $app->get('/api/health', [HealthController::class, 'health']);
@@ -39,5 +35,10 @@ return function (App $app): void {
         // Diagnostic endpoints (legacy)
         $group->post('/meterdiag_list', [MeterController::class, 'meterDiagList']);
         $group->post('/meterdiag_report', [MeterController::class, 'meterDiagReport']);
+        
+        // Firmware/OTA endpoints (legacy compatibility with MeterApp)
+        $group->post('/firmware', [FirmwareController::class, 'listFirmware']);
+        $group->post('/firmware/check', [FirmwareController::class, 'checkUpdate']);
+        $group->get('/firmware/{id}', [FirmwareController::class, 'downloadFirmware']);
     });
 };

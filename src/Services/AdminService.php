@@ -5,216 +5,605 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Database\MongoCollections;
+use DateInterval;
+use DateTimeImmutable;
 use Psr\Log\LoggerInterface;
 
-class AdminService
+final class AdminService
 {
+    /** @var array<string, int> */
+    private const ROLE_ACCESS_MAP = [
+        'TECHNICIAN' => 1,
+        'MANAGER' => 2,
+        'MANUFACTURER' => 3,
+        'FACTORY' => 4,
+    ];
+
     public function __construct(
         private MongoCollections $collections,
-        private UserAuthService $userAuthService,
-        private MeterAuthService $meterAuthService,
-        private MeterConfigService $meterConfigService,
-        private MeterSessionService $meterSessionService,
         private LoggerInterface $logger
     ) {
     }
-    
-    /**
-     * Get dashboard counts
-     */
-    public function getCounts(): array
+
+    private function buildUserToken(int $access, int $userId): string
     {
-        return [
-            'user_auth' => $this->userAuthService->count(),
-            'meter_auth' => $this->meterAuthService->count(),
-            'meter_config' => $this->meterConfigService->count(),
-            'meter_session' => $this->meterSessionService->count(),
-        ];
-    }
-    
-    /**
-     * Get latest sessions for dashboard
-     */
-    public function getLatestSessions(int $limit = 20): array
-    {
-        $sessions = $this->meterSessionService->getLatestSessions($limit);
-        
-        return array_map(fn($session) => [
-            'id' => $session->_id ? (string) $session->_id : null,
-            'deveui' => $session->deveui,
-            'counter' => $session->counter,
-            'sessionkey' => $session->sessionkey,
-            'timestamp' => $session->timestamp?->format('Y-m-d H:i:s'),
-            'comment' => $session->comment,
-        ], $sessions);
-    }
-    
-    /**
-     * Get users list for admin
-     */
-    public function getUsers(): array
-    {
-        $users = $this->userAuthService->getAllUsers();
-        
-        return array_map(fn($user) => [
-            '_id' => $user->_id ? (string) $user->_id : null,
-            'user' => $user->user,
-            'user_id' => $user->user_id,
-            'access' => $user->access,
-            'role' => $user->getRole(),
-            'token' => $user->buildToken(),
-            'created_at' => $user->created_at?->format('Y-m-d H:i:s'),
-        ], $users);
-    }
-    
-    /**
-     * Get meters list for admin
-     */
-    public function getMeters(): array
-    {
-        $meters = $this->meterAuthService->getAllMeters();
-        
-        return array_map(fn($meter) => [
-            '_id' => $meter->_id ? (string) $meter->_id : null,
-            'deveui' => $meter->deveui,
-            'authkeys' => $meter->authkeys,
-            'assigned_users' => $meter->assigned_users,
-            'valid_until' => $meter->valid_until?->format('Y-m-d H:i:s'),
-            'is_valid' => $meter->isValid(),
-            'created_at' => $meter->created_at?->format('Y-m-d H:i:s'),
-        ], $meters);
-    }
-    
-    /**
-     * Create new user
-     */
-    public function createUser(string $username, string $password, string $role = 'TECHNICIAN', ?int $userId = null, int $validDays = 365): array
-    {
-        $user = $this->userAuthService->createUser($username, $password, $role, $userId);
-        
-        return [
-            'user' => $user->user,
-            'user_id' => $user->user_id,
-            'access' => $user->access,
-            'role' => $user->getRole(),
-            'token' => $user->buildToken(),
-            'password' => $password, // Return for display only
-        ];
-    }
-    
-    /**
-     * Update user
-     */
-    public function updateUser(string $username, ?string $role = null, ?string $password = null): void
-    {
-        $this->userAuthService->updateUser($username, $role, $password);
-    }
-    
-    /**
-     * Delete user
-     */
-    public function deleteUser(string $username): void
-    {
-        $this->userAuthService->deleteUser($username);
-    }
-    
-    /**
-     * Create or update meter
-     */
-    public function createOrUpdateMeter(string $deveui, string $usersCsv, int $validDays = 365): array
-    {
-        $usernames = array_map('trim', explode(',', $usersCsv));
-        $usernames = array_filter($usernames);
-        
-        $meter = $this->meterAuthService->createOrUpdateMeter($deveui, $usernames, $validDays);
-        
-        return [
-            'deveui' => $meter->deveui,
-            'assigned_users' => $meter->assigned_users,
-            'authkeys' => $meter->authkeys,
-            'valid_until' => $meter->valid_until?->format('Y-m-d H:i:s'),
-        ];
-    }
-    
-    /**
-     * Assign users to meter
-     */
-    public function assignMeterUsers(string $deveui, string $usersCsv): void
-    {
-        $usernames = array_map('trim', explode(',', $usersCsv));
-        $usernames = array_filter($usernames);
-        
-        $this->meterAuthService->assignUsers($deveui, $usernames);
-    }
-    
-    /**
-     * Delete meter
-     */
-    public function deleteMeter(string $deveui): void
-    {
-        $this->meterAuthService->deleteMeter($deveui);
-    }
-    
-    /**
-     * Bulk import meters
-     */
-    public function bulkImportMeters(string $usersCsv, string $meterList, int $validDays = 365): array
-    {
-        $usernames = array_map('trim', explode(',', $usersCsv));
-        $usernames = array_filter($usernames);
-        
-        $meters = array_map('trim', explode("\n", $meterList));
-        $meters = array_filter($meters);
-        
-        $created = 0;
-        $skipped = 0;
-        
-        foreach ($meters as $deveui) {
-            $deveui = strtoupper(trim($deveui));
-            if (strlen($deveui) !== 16 || !ctype_xdigit($deveui)) {
-                $skipped++;
-                continue;
-            }
-            
-            try {
-                $this->meterAuthService->createOrUpdateMeter($deveui, $usernames, $validDays);
-                $created++;
-            } catch (\Exception $e) {
-                $this->logger->warning('Failed to import meter', ['deveui' => $deveui, 'error' => $e->getMessage()]);
-                $skipped++;
+        $tokenBytes = array_fill(0, 9, 0);
+        $tokenBytes[0] = max(0, $access - 1) & 0xFF;
+
+        $userIdString = (string) max(0, $userId);
+        $parseLen = min(3, strlen($userIdString));
+        for ($i = 0; $i < $parseLen; $i++) {
+            $digit = $userIdString[$i];
+            if (ctype_digit($digit)) {
+                $tokenBytes[$i + 1] = (int) $digit;
             }
         }
-        
+
+        return strtoupper(bin2hex(pack('C*', ...$tokenBytes)));
+    }
+
+    private function buildAuthTechKey(int $access, int $userId): string
+    {
+        return strtoupper(substr(hash('sha256', 'AUTH_TECH:' . $access . ':' . $userId), 0, 32));
+    }
+
+    /** @param array<string, mixed> $document */
+    private function normalizeUserWithDerivedFields(array $document): array
+    {
+        $normalized = DocumentHelper::normalize($document);
+        $access = (int) ($normalized['access'] ?? 0);
+        $userId = (int) ($normalized['user_id'] ?? 0);
+
+        if ($access > 0 && $userId > 0) {
+            $normalized['token'] = $this->buildUserToken($access, $userId);
+            $normalized['auth_tech'] = $this->buildAuthTechKey($access, $userId);
+        }
+
+        return $normalized;
+    }
+
+    private function roleFromAccess(int $access): string
+    {
+        foreach (self::ROLE_ACCESS_MAP as $role => $value) {
+            if ($value === $access) {
+                return $role;
+            }
+        }
+
+        return 'TECHNICIAN';
+    }
+
+    private function resolveRoleAccess(string $role): int
+    {
+        $roleCode = strtoupper(trim($role));
+        return self::ROLE_ACCESS_MAP[$roleCode] ?? self::ROLE_ACCESS_MAP['TECHNICIAN'];
+    }
+
+    /** @return array<string, mixed>|null */
+    private function findUserDocument(string $user): ?array
+    {
+        $user = trim($user);
+        if ($user === '') {
+            return null;
+        }
+
+        $document = $this->collections->userAuth()->findOne([
+            '$or' => [
+                ['user' => $user],
+                ['username' => $user],
+            ],
+        ]);
+
+        return is_array($document) ? $document : null;
+    }
+
+    /** @return array<string, string> */
+    private function userAuthKeyMap(): array
+    {
+        $map = [];
+
+        $cursor = $this->collections->userAuth()->find();
+        foreach ($cursor as $document) {
+            if (!is_array($document)) {
+                continue;
+            }
+
+            $user = (string) ($document['user'] ?? $document['username'] ?? '');
+            $access = (int) ($document['access'] ?? 0);
+            $userId = (int) ($document['user_id'] ?? 0);
+            if ($user === '' || $access <= 0 || $userId <= 0) {
+                continue;
+            }
+
+            $map[$this->buildAuthTechKey($access, $userId)] = $user;
+        }
+
+        return $map;
+    }
+
+    /** @return array<int, string> */
+    private function parseUsersCsv(string $usersCsv): array
+    {
+        $rawUsers = preg_split('/[,;\n\r]+/', $usersCsv) ?: [];
+        $users = [];
+        foreach ($rawUsers as $rawUser) {
+            $value = trim($rawUser);
+            if ($value !== '' && !in_array($value, $users, true)) {
+                $users[] = $value;
+            }
+        }
+
+        return $users;
+    }
+
+    /** @return array{users: array<int, string>, authkeys: array<int, string>} */
+    private function resolveUsersAndAuthKeys(string $usersCsv): array
+    {
+        $users = $this->parseUsersCsv($usersCsv);
+        if ($users === []) {
+            throw new \InvalidArgumentException('Indique pelo menos um utilizador.');
+        }
+
+        $authKeys = [];
+        foreach ($users as $user) {
+            $userDoc = $this->findUserDocument($user);
+            if (!is_array($userDoc)) {
+                throw new \RuntimeException('Utilizador não encontrado: ' . $user);
+            }
+
+            $access = (int) ($userDoc['access'] ?? 0);
+            $userId = (int) ($userDoc['user_id'] ?? 0);
+            if ($access <= 0 || $userId <= 0) {
+                throw new \RuntimeException('Utilizador inválido: ' . $user);
+            }
+
+            $authKeys[] = $this->buildAuthTechKey($access, $userId);
+        }
+
         return [
-            'created_or_updated' => $created,
+            'users' => $users,
+            'authkeys' => array_values(array_unique($authKeys)),
+        ];
+    }
+
+    /** @param array<int, string> $authKeys */
+    private function upsertMeterAuth(string $meterId, array $authKeys): void
+    {
+        $existing = $this->collections->meterAuth()->findOne([
+            '$or' => [
+                ['deveui' => $meterId],
+                ['meterid' => $meterId],
+            ],
+        ]);
+
+        if (is_array($existing)) {
+            $this->collections->meterAuth()->updateOne(
+                ['_id' => $existing['_id']],
+                ['$set' => [
+                    'deveui' => $meterId,
+                    'authkeys' => $authKeys,
+                ]]
+            );
+
+            return;
+        }
+
+        $this->collections->meterAuth()->insertOne([
+            'deveui' => $meterId,
+            'authkeys' => $authKeys,
+        ]);
+    }
+
+    private function normalizeDeveui(string $value): string
+    {
+        $deveui = strtoupper(trim($value));
+        if ($deveui === '') {
+            throw new \InvalidArgumentException('DevEUI é obrigatório.');
+        }
+
+        if (preg_match('/[;,]/', $deveui) === 1) {
+            throw new \InvalidArgumentException('DevEUI inválido: use um DevEUI por linha, sem vírgulas ou ponto e vírgula.');
+        }
+
+        if (preg_match('/^[0-9A-F]{16}$/', $deveui) !== 1) {
+            throw new \InvalidArgumentException('DevEUI inválido: ' . $deveui . '. Formato esperado: 16 caracteres hexadecimais.');
+        }
+
+        return $deveui;
+    }
+
+    /** @return array<int, string> */
+    public function availableRoles(): array
+    {
+        return array_keys(self::ROLE_ACCESS_MAP);
+    }
+
+    /** @return array<string, int> */
+    public function counts(): array
+    {
+        return [
+            'user_auth' => $this->collections->userAuth()->countDocuments(),
+            'meter_auth' => $this->collections->meterAuth()->countDocuments(),
+            'meter_config' => $this->collections->meterConfig()->countDocuments(),
+            'meter_session' => $this->collections->meterSession()->countDocuments(),
+        ];
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function latestSessions(int $limit = 20): array
+    {
+        $cursor = $this->collections->meterSession()->find([], [
+            'sort' => ['_id' => -1],
+            'limit' => $limit,
+        ]);
+
+        $items = [];
+        foreach ($cursor as $document) {
+            if (is_array($document)) {
+                $items[] = DocumentHelper::normalize($document);
+            }
+        }
+
+        return $items;
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function listUsers(int $limit = 100): array
+    {
+        $cursor = $this->collections->userAuth()->find([], ['limit' => $limit]);
+        $items = [];
+        foreach ($cursor as $document) {
+            if (is_array($document)) {
+                $items[] = $this->normalizeUserWithDerivedFields($document);
+            }
+        }
+
+        return $items;
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function listMeters(int $limit = 100): array
+    {
+        $authKeyMap = $this->userAuthKeyMap();
+
+        $cursor = $this->collections->meterAuth()->find([], [
+            'sort' => ['_id' => -1],
+            'limit' => $limit,
+        ]);
+
+        $items = [];
+        foreach ($cursor as $document) {
+            if (is_array($document)) {
+                $normalized = DocumentHelper::normalize($document);
+                $assignedUsers = [];
+                if (isset($normalized['authkeys']) && is_array($normalized['authkeys'])) {
+                    foreach ($normalized['authkeys'] as $key) {
+                        if (!is_string($key) || $key === '') {
+                            continue;
+                        }
+
+                        $user = $authKeyMap[strtoupper($key)] ?? null;
+                        if ($user !== null && !in_array($user, $assignedUsers, true)) {
+                            $assignedUsers[] = $user;
+                        }
+                    }
+                }
+
+                $normalized['assigned_users'] = $assignedUsers;
+                $items[] = $normalized;
+            }
+        }
+
+        return $items;
+    }
+
+    /** @return array<string, mixed> */
+    public function createUser(string $user, string $pass, string $role = 'technician', int $validDays = 365): array
+    {
+        $user = trim($user);
+        $pass = trim($pass);
+        $access = $this->resolveRoleAccess($role);
+        $roleCode = $this->roleFromAccess($access);
+
+        if ($user === '' || $pass === '') {
+            throw new \InvalidArgumentException('User e password são obrigatórios.');
+        }
+
+        $validUntil = (new DateTimeImmutable('now'))->add(new DateInterval('P' . max(1, $validDays) . 'D'));
+        $rights = (string) max(0, $access - 1);
+        $salt = bin2hex(random_bytes(8));
+        $passHash = hash('sha256', $salt . ':' . $pass);
+
+        $lastUser = $this->collections->userAuth()->findOne([], [
+            'sort' => ['user_id' => -1, '_id' => -1],
+        ]);
+        $nextUserId = is_array($lastUser) ? ((int) ($lastUser['user_id'] ?? 0) + 1) : 1;
+        $techKey = $this->buildAuthTechKey($access, $nextUserId);
+        $token = $this->buildUserToken($access, $nextUserId);
+        $qrPayload = 'userid=' . rawurlencode($user) . '&rights=' . $rights . '&auth_tech=' . $techKey;
+
+        if ($this->findUserDocument($user) !== null) {
+            throw new \RuntimeException('Utilizador já existe.');
+        }
+
+        $this->collections->userAuth()->insertOne([
+            'access' => $access,
+            'user_id' => $nextUserId,
+            'user' => $user,
+            'pass' => $passHash,
+            'salt' => $salt,
+        ]);
+
+        return [
+            'ok' => true,
+            'user' => $user,
+            'role' => strtolower($roleCode),
+            'access' => $access,
+            'user_id' => $nextUserId,
+            'token' => $token,
+            'auth_tech' => $techKey,
+            'qr_payload' => $qrPayload,
+            'valid_until' => $validUntil->format('Y-m-d H:i:s'),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public function createMeterLink(string $meterId, string $usersCsv, int $validDays = 365): array
+    {
+        $meterId = $this->normalizeDeveui($meterId);
+
+        $validUntil = (new DateTimeImmutable('now'))->add(new DateInterval('P' . max(1, $validDays) . 'D'));
+        $resolved = $this->resolveUsersAndAuthKeys($usersCsv);
+        $users = $resolved['users'];
+        $authKeys = $resolved['authkeys'];
+
+        $this->upsertMeterAuth($meterId, $authKeys);
+
+        return [
+            'ok' => true,
+            'meterid' => $meterId,
+            'deveui' => $meterId,
+            'assigned_users' => $users,
+            'authkeys' => $authKeys,
+            'valid_until' => $validUntil->format('Y-m-d H:i:s'),
+        ];
+    }
+
+    /**
+     * Import meter links in bulk from multiline text.
+     * Supported line formats:
+     * - DevEUI por linha (ex.: 02F8CCFFFE483203)
+     *
+     * @return array<string, mixed>
+     */
+    public function importMeterList(string $usersCsv, string $rawList, int $validDays = 365): array
+    {
+        $resolved = $this->resolveUsersAndAuthKeys($usersCsv);
+        $users = $resolved['users'];
+        $authKeys = $resolved['authkeys'];
+
+        $lines = preg_split('/\r\n|\r|\n/', $rawList) ?: [];
+        $processed = 0;
+        $createdOrUpdated = 0;
+        $skipped = 0;
+        $errors = [];
+
+        foreach ($lines as $index => $line) {
+            $trimmed = trim($line);
+            if ($trimmed === '') {
+                continue;
+            }
+
+            if (str_starts_with($trimmed, '#')) {
+                continue;
+            }
+
+            $processed++;
+
+            try {
+                $meterId = $this->normalizeDeveui($trimmed);
+                $this->upsertMeterAuth($meterId, $authKeys);
+                $createdOrUpdated++;
+            } catch (\Throwable $exception) {
+                $skipped++;
+                $errors[] = 'Linha ' . ($index + 1) . ': ' . $exception->getMessage();
+            }
+        }
+
+        return [
+            'ok' => true,
+            'users' => $users,
+            'processed' => $processed,
+            'created_or_updated' => $createdOrUpdated,
             'skipped' => $skipped,
+            'errors' => $errors,
         ];
     }
-    
-    /**
-     * Get system status
-     */
-    public function getSystemStatus(): array
+
+    /** @return array<string, mixed> */
+    public function userQrData(string $user): array
     {
-        $mongoStatus = $this->collections->getClient()->admin->command(['ping' => 1]);
-        
+        $userDoc = $this->findUserDocument($user);
+        if (!is_array($userDoc)) {
+            throw new \RuntimeException('Utilizador não encontrado.');
+        }
+
+        $userName = (string) ($userDoc['user'] ?? $userDoc['username'] ?? '');
+        $access = (int) ($userDoc['access'] ?? 0);
+        $userId = (int) ($userDoc['user_id'] ?? 0);
+        if ($userName === '' || $access <= 0 || $userId <= 0) {
+            throw new \RuntimeException('Utilizador inválido para gerar QR.');
+        }
+
+        $authTech = $this->buildAuthTechKey($access, $userId);
+        $rights = (string) max(0, $access - 1);
+
         return [
-            'mongodb' => $mongoStatus->toArray()[0]['ok'] === 1.0 ? 'connected' : 'error',
-            'counts' => $this->getCounts(),
-            'timestamp' => (new \DateTimeImmutable())->format('Y-m-d H:i:s'),
+            'ok' => true,
+            'user' => $userName,
+            'access' => $access,
+            'user_id' => $userId,
+            'token' => $this->buildUserToken($access, $userId),
+            'auth_tech' => $authTech,
+            'qr_payload' => 'userid=' . rawurlencode($userName) . '&rights=' . $rights . '&auth_tech=' . $authTech,
         ];
     }
-    
-    /**
-     * Get available roles
-     */
-    public function getRoles(): array
+
+    /** @return array<string, mixed> */
+    public function updateUser(string $user, string $role = '', string $pass = ''): array
     {
+        $existing = $this->findUserDocument($user);
+        if (!is_array($existing)) {
+            throw new \RuntimeException('Utilizador não encontrado.');
+        }
+
+        $access = (int) ($existing['access'] ?? 0);
+        $userId = (int) ($existing['user_id'] ?? 0);
+        if ($access <= 0 || $userId <= 0) {
+            throw new \RuntimeException('Documento de utilizador inválido.');
+        }
+
+        $set = [];
+        $newAccess = $access;
+        if (trim($role) !== '') {
+            $newAccess = $this->resolveRoleAccess($role);
+            if ($newAccess !== $access) {
+                $set['access'] = $newAccess;
+            }
+        }
+
+        $pass = trim($pass);
+        if ($pass !== '') {
+            $salt = bin2hex(random_bytes(8));
+            $set['salt'] = $salt;
+            $set['pass'] = hash('sha256', $salt . ':' . $pass);
+        }
+
+        if ($set !== []) {
+            $this->collections->userAuth()->updateOne(['_id' => $existing['_id']], ['$set' => $set]);
+        }
+
+        $oldAuthKey = $this->buildAuthTechKey($access, $userId);
+        $newAuthKey = $this->buildAuthTechKey($newAccess, $userId);
+        if ($oldAuthKey !== $newAuthKey) {
+            $cursor = $this->collections->meterAuth()->find(['authkeys' => ['$in' => [$oldAuthKey]]]);
+            foreach ($cursor as $meterDocument) {
+                if (!is_array($meterDocument)) {
+                    continue;
+                }
+
+                $keys = [];
+                if (isset($meterDocument['authkeys']) && is_array($meterDocument['authkeys'])) {
+                    foreach ($meterDocument['authkeys'] as $key) {
+                        if (is_string($key) && $key !== '') {
+                            $keys[] = strtoupper($key);
+                        }
+                    }
+                }
+
+                $keys = array_values(array_unique(array_map(
+                    static fn (string $value): string => $value === $oldAuthKey ? $newAuthKey : $value,
+                    $keys
+                )));
+
+                $this->collections->meterAuth()->updateOne(['_id' => $meterDocument['_id']], ['$set' => ['authkeys' => $keys]]);
+            }
+        }
+
+        return $this->userQrData($user);
+    }
+
+    /** @return array<string, mixed> */
+    public function deleteUser(string $user): array
+    {
+        $existing = $this->findUserDocument($user);
+        if (!is_array($existing)) {
+            throw new \RuntimeException('Utilizador não encontrado.');
+        }
+
+        $userName = (string) ($existing['user'] ?? $existing['username'] ?? '');
+        $access = (int) ($existing['access'] ?? 0);
+        $userId = (int) ($existing['user_id'] ?? 0);
+        $authKey = ($access > 0 && $userId > 0) ? $this->buildAuthTechKey($access, $userId) : '';
+
+        $deleteResult = $this->collections->userAuth()->deleteOne(['_id' => $existing['_id']]);
+        $detached = 0;
+
+        if ($authKey !== '') {
+            $cursor = $this->collections->meterAuth()->find(['authkeys' => ['$in' => [$authKey]]]);
+            foreach ($cursor as $meterDocument) {
+                if (!is_array($meterDocument)) {
+                    continue;
+                }
+
+                $keys = [];
+                if (isset($meterDocument['authkeys']) && is_array($meterDocument['authkeys'])) {
+                    foreach ($meterDocument['authkeys'] as $key) {
+                        if (is_string($key) && $key !== '' && strtoupper($key) !== $authKey) {
+                            $keys[] = strtoupper($key);
+                        }
+                    }
+                }
+
+                $this->collections->meterAuth()->updateOne(['_id' => $meterDocument['_id']], ['$set' => ['authkeys' => array_values(array_unique($keys))]]);
+                $detached++;
+            }
+        }
+
         return [
-            ['id' => 1, 'name' => 'TECHNICIAN', 'label' => 'Técnico'],
-            ['id' => 2, 'name' => 'MANAGER', 'label' => 'Gestor'],
-            ['id' => 3, 'name' => 'MANUFACTURER', 'label' => 'Fabricante'],
-            ['id' => 4, 'name' => 'FACTORY', 'label' => 'Fábrica'],
+            'ok' => true,
+            'user' => $userName,
+            'deleted' => $deleteResult->getDeletedCount(),
+            'meters_detached' => $detached,
         ];
+    }
+
+    /** @return array<string, mixed> */
+    public function assignMeterUsers(string $meterId, string $usersCsv): array
+    {
+        $meterId = strtoupper(trim($meterId));
+        if ($meterId === '') {
+            throw new \InvalidArgumentException('meterid é obrigatório.');
+        }
+
+        $resolved = $this->resolveUsersAndAuthKeys($usersCsv);
+        $users = $resolved['users'];
+        $authKeys = $resolved['authkeys'];
+
+        $existing = $this->collections->meterAuth()->findOne([
+            '$or' => [
+                ['deveui' => $meterId],
+                ['meterid' => $meterId],
+            ],
+        ]);
+
+        if (is_array($existing)) {
+            $this->collections->meterAuth()->updateOne(
+                ['_id' => $existing['_id']],
+                ['$set' => ['deveui' => $meterId, 'authkeys' => $authKeys]]
+            );
+        } else {
+            $this->collections->meterAuth()->insertOne(['deveui' => $meterId, 'authkeys' => $authKeys]);
+        }
+
+        return ['ok' => true, 'deveui' => $meterId, 'assigned_users' => $users, 'authkeys' => $authKeys];
+    }
+
+    /** @return array<string, mixed> */
+    public function deleteMeter(string $meterId): array
+    {
+        $meterId = strtoupper(trim($meterId));
+        if ($meterId === '') {
+            throw new \InvalidArgumentException('meterid é obrigatório.');
+        }
+
+        $result = $this->collections->meterAuth()->deleteOne([
+            '$or' => [
+                ['deveui' => $meterId],
+                ['meterid' => $meterId],
+            ],
+        ]);
+
+        return ['ok' => true, 'deveui' => $meterId, 'deleted' => $result->getDeletedCount()];
     }
 }

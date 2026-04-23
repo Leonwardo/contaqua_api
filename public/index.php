@@ -20,6 +20,16 @@ date_default_timezone_set($_ENV['APP_TIMEZONE'] ?? 'Europe/Lisbon');
 
 // Build container
 $containerBuilder = new ContainerBuilder();
+$containerBuilder->addDefinitions([
+    'settings' => [
+        'displayErrorDetails' => filter_var($_ENV['APP_DEBUG'] ?? 'false', FILTER_VALIDATE_BOOLEAN),
+    ],
+]);
+
+// Enable autowiring
+$containerBuilder->addDefinitions([
+    'settings.displayErrorDetails' => filter_var($_ENV['APP_DEBUG'] ?? 'false', FILTER_VALIDATE_BOOLEAN),
+]);
 
 // Add settings
 $settings = require __DIR__ . '/../config/settings.php';
@@ -52,6 +62,68 @@ $containerBuilder->addDefinitions([
     },
 ]);
 
+// Add app config for controllers
+$containerBuilder->addDefinitions([
+    'appConfig' => function (ContainerInterface $c) {
+        return $c->get('app') ?? ['name' => 'ContaquaAPI'];
+    },
+]);
+
+// Add controllers
+$containerBuilder->addDefinitions([
+    \App\Controllers\HealthController::class => function (ContainerInterface $c) {
+        return new \App\Controllers\HealthController(
+            $c->get(\App\Database\MongoConnection::class),
+            $c->get('appConfig')
+        );
+    },
+    \App\Controllers\AuthController::class => function (ContainerInterface $c) {
+        return new \App\Controllers\AuthController(
+            $c->get(\App\Services\UserAuthService::class),
+            $c->get(LoggerInterface::class)
+        );
+    },
+    \App\Controllers\MeterController::class => function (ContainerInterface $c) {
+        return new \App\Controllers\MeterController(
+            $c->get(\App\Services\MeterAuthService::class),
+            $c->get(\App\Services\MeterConfigService::class),
+            $c->get(\App\Services\MeterSessionService::class),
+            $c->get(\App\Services\UserAuthService::class),
+            $c->get(LoggerInterface::class)
+        );
+    },
+    \App\Controllers\FirmwareController::class => function (ContainerInterface $c) {
+        return new \App\Controllers\FirmwareController(
+            $c->get(\App\Services\FirmwareService::class),
+            $c->get(\App\Services\UserAuthService::class),
+            $c->get(LoggerInterface::class)
+        );
+    },
+    \App\Controllers\AdminController::class => function (ContainerInterface $c) {
+        return new \App\Controllers\AdminController(
+            $c->get(\App\Services\AdminService::class),
+            $c->get('admin')['token'] ?? 'default_token',
+            $c->get(LoggerInterface::class)
+        );
+    },
+    \App\Controllers\HomeController::class => function (ContainerInterface $c) {
+        return new \App\Controllers\HomeController();
+    },
+    \App\Controllers\PortalController::class => function (ContainerInterface $c) {
+        return new \App\Controllers\PortalController(
+            $c->get('admin')
+        );
+    },
+    \App\Controllers\StatusController::class => function (ContainerInterface $c) {
+        return new \App\Controllers\StatusController(
+            $c->get('admin'),
+            $c->get(\App\Database\MongoConnection::class),
+            $c->get(LoggerInterface::class),
+            $c->get('appConfig')
+        );
+    },
+]);
+
 // Add services
 $containerBuilder->addDefinitions([
     \App\Services\UserAuthService::class => function (ContainerInterface $c) {
@@ -76,13 +148,14 @@ $containerBuilder->addDefinitions([
         $logger = $c->get(LoggerInterface::class);
         return new \App\Services\MeterSessionService($collections, $logger);
     },
+    \App\Services\FirmwareService::class => function (ContainerInterface $c) {
+        $collections = $c->get(\App\Database\MongoCollections::class);
+        $logger = $c->get(LoggerInterface::class);
+        return new \App\Services\FirmwareService($collections, $logger);
+    },
     \App\Services\AdminService::class => function (ContainerInterface $c) {
         return new \App\Services\AdminService(
             $c->get(\App\Database\MongoCollections::class),
-            $c->get(\App\Services\UserAuthService::class),
-            $c->get(\App\Services\MeterAuthService::class),
-            $c->get(\App\Services\MeterConfigService::class),
-            $c->get(\App\Services\MeterSessionService::class),
             $c->get(LoggerInterface::class)
         );
     },
@@ -95,14 +168,22 @@ AppFactory::setContainer($container);
 $app = AppFactory::create();
 
 // Detect and set base path for subdirectory installations
-// Disabled for testing - uncomment when in production subdirectories
-/*
 $scriptName = $_SERVER['SCRIPT_NAME'] ?? '';
+$requestUri = $_SERVER['REQUEST_URI'] ?? '';
+
+// Calculate base path from script location
 $basePath = dirname($scriptName);
-if ($basePath !== '/' && $basePath !== '.' && $basePath !== '') {
+$basePath = rtrim(str_replace('\\', '/', $basePath), '/');
+
+// Always set base path if we're in a subdirectory
+if ($basePath !== '' && $basePath !== '.' && $basePath !== '/') {
     $app->setBasePath($basePath);
 }
-*/
+
+// Fallback for URLs without mod_rewrite (e.g., /index.php/admin/portal)
+if (strpos($requestUri, $basePath . '/index.php') === 0) {
+    $app->setBasePath($basePath . '/index.php');
+}
 
 // Add body parsing middleware
 $app->addBodyParsingMiddleware();

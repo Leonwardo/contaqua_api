@@ -1,9 +1,9 @@
 <?php return array(
     'root' => array(
         'name' => 'contaqua/api-v2',
-        'pretty_version' => 'dev-master',
-        'version' => 'dev-master',
-        'reference' => 'bbb9886c8465059c8a860afac8b55151546aed95',
+        'pretty_version' => 'dev-main',
+        'version' => 'dev-main',
+        'reference' => 'b7ae95055d440b2ae0126f4eed685fbe6106c30e',
         'type' => 'project',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -11,9 +11,9 @@
     ),
     'versions' => array(
         'contaqua/api-v2' => array(
-            'pretty_version' => 'dev-master',
-            'version' => 'dev-master',
-            'reference' => 'bbb9886c8465059c8a860afac8b55151546aed95',
+            'pretty_version' => 'dev-main',
+            'version' => 'dev-main',
+            'reference' => 'b7ae95055d440b2ae0126f4eed685fbe6106c30e',
             'type' => 'project',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),

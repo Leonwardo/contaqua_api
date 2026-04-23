@@ -25,42 +25,61 @@ class AdminController
      */
     public function dashboard(Request $request, Response $response): Response
     {
-        if (!$this->isAuthorized($request)) {
-            $html = AdminView::login();
+        try {
+            if (!$this->isAuthorized($request)) {
+                $html = AdminView::login();
+                $response->getBody()->write($html);
+                return $response->withHeader('Content-Type', 'text/html; charset=utf-8')->withStatus(401);
+            }
+            
+            // Handle POST actions (AJAX)
+            if ($request->getMethod() === 'POST') {
+                return $this->handleAction($request, $response);
+            }
+            
+            // Handle page routing
+            $queryParams = $request->getQueryParams();
+            $page = $queryParams['page'] ?? '';
+            
+            if ($page === 'users') {
+                return $this->usersPage($request, $response);
+            }
+            
+            if ($page === 'meters') {
+                return $this->metersPage($request, $response);
+            }
+            
+            // Default dashboard
+            $token = $this->getToken($request);
+            $counts = $this->adminService->counts();
+            $sessions = $this->adminService->latestSessions(20);
+            
+            // Flash messages from redirect
+            $queryParams = $request->getQueryParams();
+            $flash = [
+                'success' => $queryParams['success'] ?? null,
+                'error' => $queryParams['error'] ?? null,
+            ];
+            
+            $html = AdminView::dashboard([
+                'counts' => $counts,
+                'sessions' => $sessions,
+                'admin_token' => $token,
+                'flash' => $flash,
+            ]);
+            
             $response->getBody()->write($html);
-            return $response->withHeader('Content-Type', 'text/html; charset=utf-8')->withStatus(401);
+            return $response->withHeader('Content-Type', 'text/html; charset=utf-8');
+        } catch (\Throwable $e) {
+            $errorHtml = '<!DOCTYPE html><html><head><title>Erro</title></head><body>';
+            $errorHtml .= '<h1>Erro no Painel Administrativo</h1>';
+            $errorHtml .= '<p><strong>Mensagem:</strong> ' . htmlspecialchars($e->getMessage()) . '</p>';
+            $errorHtml .= '<p><strong>Arquivo:</strong> ' . htmlspecialchars($e->getFile()) . ':' . $e->getLine() . '</p>';
+            $errorHtml .= '<pre>' . htmlspecialchars($e->getTraceAsString()) . '</pre>';
+            $errorHtml .= '</body></html>';
+            $response->getBody()->write($errorHtml);
+            return $response->withHeader('Content-Type', 'text/html; charset=utf-8')->withStatus(500);
         }
-        
-        // Handle POST actions (AJAX)
-        if ($request->getMethod() === 'POST') {
-            return $this->handleAction($request, $response);
-        }
-        
-        // Handle page routing
-        $queryParams = $request->getQueryParams();
-        $page = $queryParams['page'] ?? '';
-        
-        if ($page === 'users') {
-            return $this->usersPage($request, $response);
-        }
-        
-        if ($page === 'meters') {
-            return $this->metersPage($request, $response);
-        }
-        
-        // Default dashboard
-        $token = $this->getToken($request);
-        $counts = $this->adminService->getCounts();
-        $sessions = $this->adminService->getLatestSessions(20);
-        
-        $html = AdminView::dashboard([
-            'counts' => $counts,
-            'sessions' => $sessions,
-            'admin_token' => $token,
-        ]);
-        
-        $response->getBody()->write($html);
-        return $response->withHeader('Content-Type', 'text/html; charset=utf-8');
     }
     
     /**
@@ -79,10 +98,10 @@ class AdminController
         
         $data = [
             'ok' => true,
-            'counts' => $this->adminService->getCounts(),
-            'latest_sessions' => $this->adminService->getLatestSessions(50),
-            'users' => $this->adminService->getUsers(),
-            'meters' => $this->adminService->getMeters(),
+            'counts' => $this->adminService->counts(),
+            'latest_sessions' => $this->adminService->latestSessions(50),
+            'users' => $this->adminService->listUsers(),
+            'meters' => $this->adminService->listMeters(),
         ];
         
         $response->getBody()->write(json_encode($data));
@@ -101,14 +120,15 @@ class AdminController
         $role = $queryParams['role'] ?? '';
         $page = max(1, (int) ($queryParams['page_num'] ?? 1));
         
-        $users = $this->adminService->getUsers();
+        $users = $this->adminService->listUsers(1000);
+        $totalCount = count($users);
         
         // Apply filters
         if ($search !== '') {
             $searchLower = strtolower($search);
             $users = array_filter($users, function($user) use ($searchLower) {
-                return str_contains(strtolower($user['user']), $searchLower) ||
-                       str_contains(strtolower((string)$user['user_id']), $searchLower);
+                return str_contains(strtolower($user['user'] ?? ''), $searchLower) ||
+                       str_contains(strtolower((string)($user['user_id'] ?? '')), $searchLower);
             });
         }
         
@@ -120,20 +140,27 @@ class AdminController
             });
         }
         
-        $total = count($users);
+        $filteredCount = count($users);
         $limit = 50;
         $offset = ($page - 1) * $limit;
         $users = array_slice($users, $offset, $limit);
+        
+        // Flash messages from redirect
+        $flash = [
+            'success' => $queryParams['success'] ?? null,
+            'error' => $queryParams['error'] ?? null,
+        ];
         
         $html = AdminView::users([
             'users' => $users,
             'search' => $search,
             'role' => $role,
             'page' => $page,
-            'total' => $total,
+            'total' => $filteredCount,
             'per_page' => $limit,
             'admin_token' => $token,
-            'roles' => $this->adminService->getRoles(),
+            'roles' => $this->adminService->availableRoles(),
+            'flash' => $flash,
         ]);
         
         $response->getBody()->write($html);
@@ -151,30 +178,48 @@ class AdminController
         $search = $queryParams['search'] ?? '';
         $page = max(1, (int) ($queryParams['page_num'] ?? 1));
         
-        $meters = $this->adminService->getMeters();
+        $meters = $this->adminService->listMeters(1000);
+        $totalCount = count($meters);
         
         // Apply filters
         if ($search !== '') {
             $searchLower = strtolower($search);
             $meters = array_filter($meters, function($meter) use ($searchLower) {
-                return str_contains(strtolower($meter['deveui']), $searchLower) ||
+                return str_contains(strtolower($meter['deveui'] ?? ''), $searchLower) ||
                        str_contains(strtolower(implode(' ', $meter['assigned_users'] ?? [])), $searchLower);
             });
         }
         
-        $total = count($meters);
+        $filteredCount = count($meters);
         $limit = 50;
         $offset = ($page - 1) * $limit;
         $meters = array_slice($meters, $offset, $limit);
+        
+        // Flash messages from redirect
+        $flash = [
+            'success' => $queryParams['success'] ?? null,
+            'error' => $queryParams['error'] ?? null,
+        ];
+        
+        // Get all users for the picker
+        $allUsers = $this->adminService->listUsers(1000);
+        $userList = [];
+        foreach ($allUsers as $user) {
+            $userList[] = [
+                'username' => $user['user'] ?? '',
+                'role' => $user['role'] ?? 'user',
+            ];
+        }
         
         $html = AdminView::meters([
             'meters' => $meters,
             'search' => $search,
             'page' => $page,
-            'total' => $total,
+            'total' => $filteredCount,
             'per_page' => $limit,
             'admin_token' => $token,
-            'users' => array_column($this->adminService->getUsers(), 'user'),
+            'flash' => $flash,
+            'all_users' => $userList,
         ]);
         
         $response->getBody()->write($html);
@@ -199,11 +244,9 @@ class AdminController
             switch ($action) {
                 case 'create_user':
                     $userData = $this->adminService->createUser(
-                        (string) ($data['user'] ?? ''),
-                        (string) ($data['pass'] ?? ''),
-                        (string) ($data['role'] ?? 'TECHNICIAN'),
-                        null,
-                        (int) ($data['valid_days'] ?? 365)
+                        (string) ($data['user'] ?? $data['username'] ?? ''),
+                        (string) ($data['pass'] ?? $data['password'] ?? ''),
+                        (string) ($data['role'] ?? 'TECHNICIAN')
                     );
                     $result = [
                         'success' => true,
@@ -236,9 +279,9 @@ class AdminController
                     break;
                     
                 case 'create_meter':
-                    $meterData = $this->adminService->createOrUpdateMeter(
+                    $meterData = $this->adminService->createMeterLink(
                         (string) ($data['meterid'] ?? ''),
-                        (string) ($data['users_csv'] ?? ''),
+                        (string) ($data['users'] ?? ''),
                         (int) ($data['valid_days'] ?? 365)
                     );
                     $result = [
@@ -252,7 +295,7 @@ class AdminController
                 case 'assign_meter_users':
                     $this->adminService->assignMeterUsers(
                         (string) ($data['meterid'] ?? ''),
-                        (string) ($data['users_csv'] ?? '')
+                        (string) ($data['users'] ?? '')
                     );
                     $result = [
                         'success' => true,
@@ -271,8 +314,8 @@ class AdminController
                     break;
                     
                 case 'bulk_import_meters':
-                    $importResult = $this->adminService->bulkImportMeters(
-                        (string) ($data['users_csv'] ?? ''),
+                    $importResult = $this->adminService->importMeterList(
+                        (string) ($data['users'] ?? ''),
                         (string) ($data['meter_list'] ?? ''),
                         (int) ($data['valid_days'] ?? 365)
                     );
@@ -292,8 +335,28 @@ class AdminController
             ];
         }
         
-        $response->getBody()->write(json_encode($result));
-        return $response->withHeader('Content-Type', 'application/json');
+        // Se for requisição AJAX (X-Requested-With: XMLHttpRequest), retorna JSON
+        // Senão, faz redirect para evitar reenvio do formulário (PRG pattern)
+        $isAjax = $request->hasHeader('X-Requested-With') && 
+                  strpos($request->getHeaderLine('X-Requested-With'), 'XMLHttpRequest') !== false;
+        
+        if ($isAjax) {
+            $response->getBody()->write(json_encode($result));
+            return $response->withHeader('Content-Type', 'application/json');
+        }
+        
+        // Para formulários HTML normais - redirect com mensagem flash
+        $queryParams = $request->getQueryParams();
+        $redirectPage = $queryParams['page'] ?? 'dashboard';
+        $redirectUrl = '?page=' . $redirectPage . '&admin_token=' . $this->getToken($request);
+        
+        if ($result['success']) {
+            $redirectUrl .= '&success=' . urlencode($result['message']);
+        } else {
+            $redirectUrl .= '&error=' . urlencode($result['message']);
+        }
+        
+        return $response->withHeader('Location', $redirectUrl)->withStatus(302);
     }
     
     /**
@@ -313,7 +376,8 @@ class AdminController
         $queryParams = $request->getQueryParams();
         $body = $request->getParsedBody() ?? [];
         
-        $token = (string) ($queryParams['admin_token'] ?? $body['admin_token'] ?? '');
+        // Aceitar tanto 'token' quanto 'admin_token'
+        $token = (string) ($queryParams['admin_token'] ?? $queryParams['token'] ?? $body['admin_token'] ?? $body['token'] ?? '');
         
         if ($token === '') {
             $authHeader = $request->getHeaderLine('Authorization');
