@@ -33,8 +33,8 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # Variáveis
-PROJECT_DIR="/var/www/contaqua_api_v2"
-DOMAIN=${1:-"localhost"}
+PROJECT_DIR="/var/www/apisagem"
+DOMAIN=${1:-"_"}
 
 echo "Diretório do projeto: $PROJECT_DIR"
 echo "Domínio: $DOMAIN"
@@ -101,20 +101,22 @@ fi
 # 6. Criar estrutura do projeto
 print_info "6. Configurando projeto..."
 mkdir -p $PROJECT_DIR
-chown -R $SUDO_USER:$SUDO_USER $PROJECT_DIR
 
 # Verificar se há ficheiros no diretório
 if [ ! -f "$PROJECT_DIR/composer.json" ]; then
     print_error "Ficheiros do projeto não encontrados em $PROJECT_DIR"
-    print_info "Copie os ficheiros do projeto primeiro:"
-    echo "  scp -r /caminho/local/contaqua_api_v2/* root@$DOMAIN:$PROJECT_DIR/"
+    print_info "Certifique-se de que o código está na pasta $PROJECT_DIR"
+    print_info "Pode usar: git clone SEU_REPO $PROJECT_DIR"
     exit 1
 fi
 
 # 7. Instalar dependências
 print_info "7. Instalando dependências Composer..."
 cd $PROJECT_DIR
-sudo -u $SUDO_USER composer install --no-dev --optimize-autoloader
+composer install --no-dev --optimize-autoloader 2>/dev/null || {
+    print_info "Tentando com memory limit aumentado..."
+    COMPOSER_MEMORY_LIMIT=-1 composer install --no-dev --optimize-autoloader
+}
 print_status "Dependências instaladas"
 
 # 8. Configurar permissões
@@ -127,62 +129,68 @@ print_status "Permissões configuradas"
 
 # 9. Configurar Nginx
 print_info "9. Configurando Nginx..."
-cat > /etc/nginx/sites-available/contaqua-api << 'EOF'
+cat > /etc/nginx/sites-available/apisagem << 'EOF'
 server {
-    listen 80;
+    listen 80 default_server;
+    listen [::]:80 default_server;
     server_name _;
-    root /var/www/contaqua_api_v2/public;
+    root /var/www/apisagem/public;
     index index.php;
 
-    access_log /var/log/nginx/contaqua_access.log;
-    error_log /var/log/nginx/contaqua_error.log;
+    access_log /var/log/nginx/apisagem_access.log;
+    error_log /var/log/nginx/apisagem_error.log warn;
 
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    
+    client_max_body_size 10M;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
 
     location ~ \.php$ {
-        try_files $uri =404;
-        fastcgi_split_path_info ^(.+\.php)(/.+)$;
         fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         fastcgi_param HTTP_AUTHORIZATION $http_authorization if_not_empty;
         include fastcgi_params;
+        fastcgi_read_timeout 300;
     }
 
     location ~ /\. {
         deny all;
     }
 
-    location ~\.(env|git|lock|md)$ {
+    location ~\.(env|git|lock|md|sh|log)$ {
         deny all;
-    }
-
-    location / {
-        try_files $uri $uri/ /index.php?$query_string;
     }
 }
 EOF
 
 # Ativar site
-ln -sf /etc/nginx/sites-available/contaqua-api /etc/nginx/sites-enabled/
+ln -sf /etc/nginx/sites-available/apisagem /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
 systemctl reload nginx
 print_status "Nginx configurado"
 
-# 10. Criar database MongoDB
-print_info "10. Configurando MongoDB..."
-mongosh --eval "
-    use contaqua;
-    db.createCollection('user_auth');
-    db.createCollection('meter_auth');
-    db.createCollection('meter_config');
-    db.createCollection('meter_session');
-    print('Database e collections criados');
-" || true
-print_status "MongoDB configurado"
+# 10. Configurar MongoDB (se local)
+print_info "10. Configurando MongoDB (se local)..."
+if command -v mongosh &> /dev/null; then
+    mongosh --eval "
+        use apisagem;
+        db.createCollection('user_auth');
+        db.createCollection('meter_auth');
+        db.createCollection('meter_config');
+        db.createCollection('meter_session');
+        print('Database e collections criados');
+    " 2>/dev/null || print_info "MongoDB remoto ou já configurado"
+else
+    print_info "mongosh não instalado - usando MongoDB Atlas ou já configurado"
+fi
 
 # 11. Configurar .env se não existir
 if [ ! -f "$PROJECT_DIR/.env" ]; then
@@ -195,7 +203,7 @@ APP_URL=http://$DOMAIN
 APP_TIMEZONE=Europe/Lisbon
 
 MONGO_URI=mongodb://127.0.0.1:27017
-MONGO_DATABASE=contaqua
+MONGO_DATABASE=apisagem
 
 ADMIN_TOKEN=change_this_to_secure_random_token_$(openssl rand -hex 8)
 ADMIN_SESSION_TIMEOUT=3600
@@ -257,7 +265,7 @@ echo "Aceda ao painel admin: http://$DOMAIN/admin"
 echo "Token admin: grep ADMIN_TOKEN $PROJECT_DIR/.env"
 echo ""
 echo "Comandos úteis:"
-echo "  Ver logs:  tail -f /var/log/nginx/contaqua_error.log"
-echo "  Reiniciar: systemctl restart nginx php8.3-fpm mongod"
-echo "  MongoDB:   mongosh"
+echo "  Ver logs:  tail -f /var/log/nginx/apisagem_error.log"
+echo "  Reiniciar: systemctl restart nginx php8.3-fpm"
+echo "  Update:    bash /var/www/apisagem/update.sh"
 echo ""
