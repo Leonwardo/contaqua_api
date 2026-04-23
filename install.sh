@@ -17,6 +17,7 @@ NC='\033[0m'
 
 echo "=========================================="
 echo -e "${BLUE}  Instalador Contaqua API - Completo${NC}"
+echo -e "${RED}  Refined by X Delta Core and Leonwardo${NC}"
 echo "=========================================="
 echo ""
 
