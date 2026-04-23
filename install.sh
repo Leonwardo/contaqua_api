@@ -54,7 +54,7 @@ add-apt-repository ppa:ondrej/php -y
 echo -e "${BLUE}[INFO]${NC} Atualizando packages..."
 apt update -y
 echo -e "${BLUE}[INFO]${NC} A instalar PHP 8.3 (pode demorar)..."
-apt install -y php8.3-fpm php8.3-mongodb php8.3-mbstring php8.3-curl php8.3-openssl php8.3-bcmath php8.3-zip php8.3-xml php8.3-cli php8.3-gd
+apt install -y php8.3-fpm php8.3-mongodb php8.3-mbstring php8.3-curl php8.3-bcmath php8.3-zip php8.3-xml php8.3-cli php8.3-gd
 check_error "PHP install"
 systemctl enable php8.3-fpm
 
@@ -142,9 +142,10 @@ echo -e "${GREEN}[OK]${NC} Permissões configuradas"
 echo -e "${YELLOW}[9/10]${NC} Instalando dependências Composer..."
 if [ -f "$PROJECT_DIR/composer.json" ]; then
     cd $PROJECT_DIR
-    composer install --no-dev --optimize-autoloader 2>/dev/null || {
+    export COMPOSER_ALLOW_SUPERUSER=1
+    composer install --no-dev --optimize-autoloader --no-interaction 2>/dev/null || {
         echo -e "${YELLOW}[INFO]${NC} Tentando com memory limit aumentado..."
-        COMPOSER_MEMORY_LIMIT=-1 composer install --no-dev --optimize-autoloader
+        COMPOSER_MEMORY_LIMIT=-1 COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
     }
     echo -e "${GREEN}[OK]${NC} Dependências instaladas"
 else

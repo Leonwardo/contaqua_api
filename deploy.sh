@@ -62,7 +62,7 @@ if ! command -v php &> /dev/null || ! php -v | grep -q "8.3"; then
     apt install software-properties-common -y
     add-apt-repository ppa:ondrej/php -y
     apt update
-    apt install php8.3-fpm php8.3-mongodb php8.3-mbstring php8.3-curl php8.3-openssl php8.3-bcmath php8.3-zip php8.3-xml -y
+    apt install php8.3-fpm php8.3-mongodb php8.3-mbstring php8.3-curl php8.3-bcmath php8.3-zip php8.3-xml -y
     print_status "PHP 8.3 instalado"
 else
     print_status "PHP 8.3 já instalado"
@@ -113,9 +113,10 @@ fi
 # 7. Instalar dependências
 print_info "7. Instalando dependências Composer..."
 cd $PROJECT_DIR
-composer install --no-dev --optimize-autoloader 2>/dev/null || {
+export COMPOSER_ALLOW_SUPERUSER=1
+composer install --no-dev --optimize-autoloader --no-interaction 2>/dev/null || {
     print_info "Tentando com memory limit aumentado..."
-    COMPOSER_MEMORY_LIMIT=-1 composer install --no-dev --optimize-autoloader
+    COMPOSER_MEMORY_LIMIT=-1 COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
 }
 print_status "Dependências instaladas"
 

@@ -60,10 +60,14 @@ git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || {
 echo -e "${GREEN}[OK]${NC} Código atualizado"
 
 echo -e "${YELLOW}[3/6]${NC} A atualizar dependências Composer..."
+echo -e "${BLUE}[INFO]${NC} Versão PHP atual: $(php -v | head -n 1)"
+
 if [ -f "composer.json" ]; then
-    composer install --no-dev --optimize-autoloader 2>/dev/null || {
+    # Usar --no-interaction para não pedir confirmação
+    export COMPOSER_ALLOW_SUPERUSER=1
+    composer install --no-dev --optimize-autoloader --no-interaction 2>/dev/null || {
         echo -e "${YELLOW}[INFO]${NC} Tentando com memory limit aumentado..."
-        COMPOSER_MEMORY_LIMIT=-1 composer install --no-dev --optimize-autoloader
+        COMPOSER_MEMORY_LIMIT=-1 COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
     }
     echo -e "${GREEN}[OK]${NC} Dependências atualizadas"
 else
