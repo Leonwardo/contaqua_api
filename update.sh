@@ -72,15 +72,23 @@ if [ -f "composer.json" ]; then
         sed -i 's/"mongodb\/mongodb": "1.15.0"/"mongodb\/mongodb": "^1.15 || ^2.0"/' composer.json
     fi
 
-    composer install --no-dev --optimize-autoloader --no-interaction || {
-        echo -e "${YELLOW}[INFO]${NC} Composer install falhou. A tentar fallback..."
-        rm -f composer.lock
-        rm -rf vendor
-        composer update mongodb/mongodb --with-all-dependencies --no-dev --optimize-autoloader --no-interaction || {
-            echo -e "${RED}[ERRO]${NC} Falha ao resolver dependências com Composer"
+    if [ -f "composer.lock" ]; then
+        composer install --no-dev --optimize-autoloader --no-interaction || {
+            echo -e "${YELLOW}[INFO]${NC} Composer install falhou. A regenerar lock com update completo..."
+            rm -f composer.lock
+            rm -rf vendor
+            composer update --with-all-dependencies --no-dev --optimize-autoloader --no-interaction || {
+                echo -e "${RED}[ERRO]${NC} Falha ao resolver dependências com Composer"
+                exit 1
+            }
+        }
+    else
+        echo -e "${YELLOW}[INFO]${NC} composer.lock ausente. A gerar lock com composer update..."
+        composer update --with-all-dependencies --no-dev --optimize-autoloader --no-interaction || {
+            echo -e "${RED}[ERRO]${NC} Falha ao gerar dependências com Composer"
             exit 1
         }
-    }
+    fi
 
     php -r "require '$PROJECT_DIR/vendor/autoload.php';" >/dev/null 2>&1 || {
         echo -e "${RED}[ERRO]${NC} Vendor/autoload inválido após atualização"

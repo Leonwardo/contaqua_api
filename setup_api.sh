@@ -143,9 +143,9 @@ mkdir -p "${PROJECT_DIR}/logs" "${PROJECT_DIR}/storage/uploads" "${PROJECT_DIR}/
 ok "Diretórios logs/storage prontos"
 
 step "6/10" "Corrigir dependência mongodb/mongodb para PHP ext-mongodb 2.x"
-if [[ -f "composer.json" ]] && grep -q '"mongodb/mongodb": "1.15.0"' composer.json; then
+if [[ -f "composer.json" ]] && grep -Eq '"mongodb/mongodb"[[:space:]]*:[[:space:]]*"1\.15\.0"' composer.json; then
     cp composer.json "composer.json.backup.$(date +%Y%m%d_%H%M%S)"
-    sed -i 's/"mongodb\/mongodb": "1.15.0"/"mongodb\/mongodb": "^1.15 || ^2.0"/' composer.json
+    sed -Ei 's/"mongodb\/mongodb"[[:space:]]*:[[:space:]]*"1\.15\.0"/"mongodb\/mongodb": "^1.15 || ^2.0"/' composer.json
     ok "composer.json atualizado para aceitar mongodb 2.x"
 else
     ok "composer.json já está compatível"
@@ -162,12 +162,20 @@ rm -rf vendor
 export COMPOSER_ALLOW_SUPERUSER=1
 export COMPOSER_MEMORY_LIMIT=-1
 
-if ! composer install --no-dev --optimize-autoloader --no-interaction; then
-    warn "composer install falhou. A tentar update dirigido do mongodb..."
-    rm -f composer.lock
-    rm -rf vendor
-    composer update mongodb/mongodb --with-all-dependencies --no-dev --optimize-autoloader --no-interaction || {
-        err "Composer não conseguiu resolver dependências"
+if [[ -f "composer.lock" ]]; then
+    if ! composer install --no-dev --optimize-autoloader --no-interaction; then
+        warn "composer install falhou. A gerar lock novo com update completo..."
+        rm -f composer.lock
+        rm -rf vendor
+        composer update --with-all-dependencies --no-dev --optimize-autoloader --no-interaction || {
+            err "Composer não conseguiu resolver dependências"
+            exit 1
+        }
+    fi
+else
+    warn "composer.lock não existe. A gerar lock com composer update..."
+    composer update --with-all-dependencies --no-dev --optimize-autoloader --no-interaction || {
+        err "Composer não conseguiu gerar dependências"
         exit 1
     }
 fi
