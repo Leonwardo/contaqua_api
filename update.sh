@@ -63,12 +63,30 @@ echo -e "${YELLOW}[3/6]${NC} A atualizar dependências Composer..."
 echo -e "${BLUE}[INFO]${NC} Versão PHP atual: $(php -v | head -n 1)"
 
 if [ -f "composer.json" ]; then
-    # Usar --no-interaction para não pedir confirmação
     export COMPOSER_ALLOW_SUPERUSER=1
-    composer install --no-dev --optimize-autoloader --no-interaction 2>/dev/null || {
-        echo -e "${YELLOW}[INFO]${NC} Tentando com memory limit aumentado..."
-        COMPOSER_MEMORY_LIMIT=-1 COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
+    export COMPOSER_MEMORY_LIMIT=-1
+
+    if grep -q '"mongodb/mongodb": "1.15.0"' composer.json; then
+        echo -e "${YELLOW}[INFO]${NC} Ajustando mongodb/mongodb para compatibilidade com ext-mongodb 2.x..."
+        cp composer.json composer.json.backup.$(date +%Y%m%d_%H%M%S)
+        sed -i 's/"mongodb\/mongodb": "1.15.0"/"mongodb\/mongodb": "^1.15 || ^2.0"/' composer.json
+    fi
+
+    composer install --no-dev --optimize-autoloader --no-interaction || {
+        echo -e "${YELLOW}[INFO]${NC} Composer install falhou. A tentar fallback..."
+        rm -f composer.lock
+        rm -rf vendor
+        composer update mongodb/mongodb --with-all-dependencies --no-dev --optimize-autoloader --no-interaction || {
+            echo -e "${RED}[ERRO]${NC} Falha ao resolver dependências com Composer"
+            exit 1
+        }
     }
+
+    php -r "require '$PROJECT_DIR/vendor/autoload.php';" >/dev/null 2>&1 || {
+        echo -e "${RED}[ERRO]${NC} Vendor/autoload inválido após atualização"
+        exit 1
+    }
+
     echo -e "${GREEN}[OK]${NC} Dependências atualizadas"
 else
     echo -e "${YELLOW}[AVISO]${NC} composer.json não encontrado"
