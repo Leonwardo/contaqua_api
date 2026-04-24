@@ -10,6 +10,27 @@ use Slim\App;
 use Slim\Routing\RouteCollectorProxy;
 
 return function (App $app): void {
+    // Debug endpoint for troubleshooting
+    $app->post('/api/debug/login', function ($request, $response) {
+        $data = $request->getParsedBody() ?? [];
+        $rawBody = (string) $request->getBody();
+        
+        $result = [
+            'method' => $request->getMethod(),
+            'content_type' => $request->getHeaderLine('Content-Type'),
+            'parsed_body' => $data,
+            'raw_body' => $rawBody,
+            'body_empty' => empty($rawBody),
+        ];
+        
+        // Try manual parsing
+        parse_str($rawBody, $manualParsed);
+        $result['manual_parse'] = $manualParsed;
+        
+        $response->getBody()->write(json_encode($result, JSON_PRETTY_PRINT));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+    
     // Health check endpoints
     $app->get('/api/server', [HealthController::class, 'server']);
     $app->get('/api/health', [HealthController::class, 'health']);

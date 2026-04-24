@@ -66,10 +66,29 @@ class AuthController
     public function userToken(Request $request, Response $response): Response
     {
         $data = $request->getParsedBody() ?? [];
+        
+        // Debug: log raw body for troubleshooting
+        $rawBody = (string) $request->getBody();
+        $this->logger->debug('user_token request', [
+            'content_type' => $request->getHeaderLine('Content-Type'),
+            'parsed_body' => $data,
+            'raw_body_preview' => substr($rawBody, 0, 200),
+        ]);
+        
+        // Support both form-urlencoded and JSON
         $user = (string) ($data['user'] ?? '');
         $pass = (string) ($data['pass'] ?? '');
         
+        // Fallback: try to parse raw body if parsedBody is empty
+        if ($user === '' && $pass === '' && $rawBody !== '') {
+            parse_str($rawBody, $parsed);
+            $user = (string) ($parsed['user'] ?? '');
+            $pass = (string) ($parsed['pass'] ?? '');
+            $this->logger->debug('user_token fallback parsing', ['user' => $user, 'pass_len' => strlen($pass)]);
+        }
+        
         if ($user === '' || $pass === '') {
+            $this->logger->warning('user_token missing credentials', ['has_user' => $user !== '', 'has_pass' => $pass !== '']);
             $response->getBody()->write('Unable to authenticate user');
             return $response->withStatus(201); // Legacy compatibility
         }
@@ -77,6 +96,7 @@ class AuthController
         $token = $this->userAuthService->login($user, $pass);
         
         if ($token === null) {
+            $this->logger->warning('user_token login failed', ['user' => $user]);
             $response->getBody()->write('Unable to authenticate user');
             return $response->withStatus(201); // Legacy compatibility
         }
@@ -87,6 +107,7 @@ class AuthController
             $response = $response->withHeader('X-User-Access', (string) ($document->access ?? ''));
         }
         
+        $this->logger->info('user_token login success', ['user' => $user]);
         $response->getBody()->write($token);
         return $response;
     }
