@@ -150,6 +150,12 @@ class MeterController
         
         $configs = $this->meterConfigService->getAllowedConfigs($user->user, $deveui);
         
+        // MeterApp parser (RemoteDownloader.listConfigurations):
+        // Strips {}[]"' and replaces ":" with "," then splits by ",".
+        // Iterates with i += 4, reading content[i+1] as id (used as URL path)
+        // and content[i+3] as name. So each config MUST yield exactly
+        // 4 tokens after stripping => exactly 2 JSON keys per object:
+        // { "id": "<id>", "name": "<name>" }
         $result = [];
         foreach ($configs as $config) {
             if ($config->category !== $category) {
@@ -157,16 +163,20 @@ class MeterController
             }
             
             $id = (string) ($config->_id ?? '');
+            if ($id === '') {
+                continue;
+            }
+            $name = $config->name !== '' ? $config->name : ('config_' . $id);
+            // Sanitize to avoid breaking the crude client parser
+            $name = str_replace([',', ':', '{', '}', '[', ']', '"', "'"], '_', $name);
             $result[] = [
                 'id' => $id,
-                'name' => $config->name ?: 'config_' . $id,
-                'path' => '/api/config/' . $id,
-                'description' => $config->description ?? '',
+                'name' => $name,
             ];
         }
         
         $response->getBody()->write(json_encode($result, JSON_UNESCAPED_SLASHES));
-        return $response;
+        return $response->withHeader('Content-Type', 'application/json');
     }
     
     /**
@@ -236,6 +246,50 @@ class MeterController
         }
     }
     
+    /**
+     * Encrypt payload for BLE session (POST /api/encrypt)
+     *
+     * Compatible with RemoteEncryptor.encrypt:
+     *   body: token, deveui, port (hex), plaintext (hex)
+     *   200 -> "<hex>" (quoted; client strips outer quotes)
+     *   non-200 -> CipheringException in client
+     *
+     * NFC does NOT use this (driver.requiresCiphering() == false).
+     * Without the private Sagemcom key material we cannot produce valid
+     * ciphertext, so we respond 501 and the client surfaces a
+     * CipheringException. NFC keeps working normally.
+     */
+    public function encrypt(Request $request, Response $response): Response
+    {
+        $data = $request->getParsedBody() ?? [];
+        $token = (string) ($data['token'] ?? '');
+        if ($token === '' || $this->userAuthService->validateToken($token) === null) {
+            $response->getBody()->write('unauthorized');
+            return $response->withStatus(401);
+        }
+        $this->logger->warning('BLE /api/encrypt called but cipher is not configured');
+        $response->getBody()->write('cipher not configured');
+        return $response->withStatus(501);
+    }
+
+    /**
+     * Decrypt payload for BLE session (POST /api/decrypt)
+     *   body: token, deveui, port (hex), ciphered (hex)
+     * Same caveats as encrypt(). NFC does not use it.
+     */
+    public function decrypt(Request $request, Response $response): Response
+    {
+        $data = $request->getParsedBody() ?? [];
+        $token = (string) ($data['token'] ?? '');
+        if ($token === '' || $this->userAuthService->validateToken($token) === null) {
+            $response->getBody()->write('unauthorized');
+            return $response->withStatus(401);
+        }
+        $this->logger->warning('BLE /api/decrypt called but cipher is not configured');
+        $response->getBody()->write('cipher not configured');
+        return $response->withStatus(501);
+    }
+
     /**
      * Get diagnostic list (legacy)
      * POST /api/meterdiag_list

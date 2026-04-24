@@ -80,6 +80,12 @@ class AuthController
             $response->getBody()->write('Unable to authenticate user');
             return $response->withStatus(201); // Legacy compatibility
         }
+
+        $document = $this->userAuthService->validateToken($token);
+        if ($document !== null) {
+            $response = $response->withHeader('X-User-Role', (string) $document->getRole());
+            $response = $response->withHeader('X-User-Access', (string) ($document->access ?? ''));
+        }
         
         $response->getBody()->write($token);
         return $response;

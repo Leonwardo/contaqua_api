@@ -45,6 +45,14 @@ return function (App $app): void {
         $group->post('/firmware/check', [FirmwareController::class, 'checkUpdate']);
         $group->post('/firmware/update', [FirmwareController::class, 'checkUpdate']);
         $group->get('/firmware/{id}', [FirmwareController::class, 'downloadFirmware']);
+        
+        // BLE cipher endpoints (NFC does not use these; 501 stubs)
+        $group->post('/encrypt', [MeterController::class, 'encrypt']);
+        $group->post('/decrypt', [MeterController::class, 'decrypt']);
+        
+        // MeterApp self-updater (Android APK)
+        $group->post('/android', [FirmwareController::class, 'listAndroid']);
+        $group->get('/android/{file}', [FirmwareController::class, 'downloadAndroid']);
     });
 
     // Legacy root aliases (no /api prefix)
@@ -62,4 +70,8 @@ return function (App $app): void {
     $app->post('/firmware/check', [FirmwareController::class, 'checkUpdate']);
     $app->post('/firmware/update', [FirmwareController::class, 'checkUpdate']);
     $app->get('/firmware/{id}', [FirmwareController::class, 'downloadFirmware']);
+    $app->post('/encrypt', [MeterController::class, 'encrypt']);
+    $app->post('/decrypt', [MeterController::class, 'decrypt']);
+    $app->post('/android', [FirmwareController::class, 'listAndroid']);
+    $app->get('/android/{file}', [FirmwareController::class, 'downloadAndroid']);
 };

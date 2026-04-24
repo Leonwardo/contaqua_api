@@ -24,47 +24,68 @@ class FirmwareController
     }
     
     /**
-     * List available firmware updates
-     * POST /api/firmware
-     * 
-     * Expected body: {token: string, hw_version?: string, meter_type?: string}
-     * Returns: JSON array of firmware entries
+     * Meter firmware update check (POST /api/firmware)
+     *
+     * Compatible with MeterApp RemoteDownloader.checkForUpdate:
+     *   body: token, revision (current), type (app|mid|inst), deveui
+     *   200  -> text parsed by:
+     *             resultMsg.replaceAll(" ","").replaceAll("[","").replaceAll("]","").replaceAll("\"","");
+     *             content = resultMsg.split(",")
+     *             version = content[0]
+     *             securityCtx = content[1]
+     *             fileId = content[2]   (appended to /api/firmware/{id})
+     *             size = Integer.parseInt(content[3])
+     *   non-200 -> HttpsStatusException thrown in client (== "no update")
+     *
+     * So we MUST return exactly a 4-element tuple:
+     *   ["<version>","<securityCtx>","<id>","<size>"]
      */
     public function listFirmware(Request $request, Response $response): Response
     {
         $data = $request->getParsedBody() ?? [];
         $token = (string) ($data['token'] ?? '');
-        $hwVersion = (string) ($data['hw_version'] ?? $data['hwversion'] ?? '');
-        $meterType = (string) ($data['meter_type'] ?? $data['metertype'] ?? '');
+        $currentRevision = (string) ($data['revision'] ?? '');
+        $type = strtolower((string) ($data['type'] ?? ''));
+        $deveui = strtoupper((string) ($data['deveui'] ?? ''));
         
-        // Validate token
         if ($token === '' || $this->userAuthService->validateToken($token) === null) {
-            $response->getBody()->write(json_encode([]));
+            $response->getBody()->write('unauthorized');
             return $response->withStatus(401);
         }
         
+        // Use meter_type as the "revision type" selector (app/mid/inst).
         $firmwares = $this->firmwareService->getAvailableFirmware(
-            $hwVersion !== '' ? $hwVersion : null,
-            $meterType !== '' ? $meterType : null
+            null,
+            $type !== '' ? $type : null
         );
         
-        // Format for MeterApp compatibility
-        $result = [];
-        foreach ($firmwares as $firmware) {
-            $id = (string) ($firmware->_id ?? '');
-            $result[] = [
-                'id' => $id,
-                'version' => $firmware->version,
-                'name' => $firmware->name,
-                'description' => $firmware->description ?? '',
-                'path' => '/api/firmware/' . $id,
-                'size' => $firmware->file_size,
-                'hw_version' => $firmware->hw_version ?? '',
-                'meter_type' => $firmware->meter_type ?? '',
-            ];
+        if (empty($firmwares)) {
+            // Client interprets non-200 as "no update available"
+            $response->getBody()->write('no update');
+            return $response->withStatus(204);
         }
         
-        $response->getBody()->write(json_encode($result, JSON_UNESCAPED_SLASHES));
+        $latest = $firmwares[0];
+        
+        // If current revision is already >= latest, respond 204
+        if ($currentRevision !== '' && version_compare($latest->version, $currentRevision, '<=')) {
+            $response->getBody()->write('up to date');
+            return $response->withStatus(204);
+        }
+        
+        $id = (string) ($latest->_id ?? '');
+        $securityCtx = $latest->hw_version ?: 'NONE'; // reused as security context
+        
+        // Sanitize values so the client's strip-and-split survives
+        $sanitize = fn(string $v) => str_replace([',', ' ', '[', ']', '"'], '_', $v);
+        $tuple = [
+            $sanitize($latest->version),
+            $sanitize($securityCtx),
+            $sanitize($id),
+            (string) $latest->file_size,
+        ];
+        
+        $response->getBody()->write(json_encode($tuple, JSON_UNESCAPED_SLASHES));
         return $response->withHeader('Content-Type', 'application/json');
     }
     
@@ -91,6 +112,44 @@ class FirmwareController
             ->withHeader('Content-Type', 'application/octet-stream')
             ->withHeader('Content-Disposition', 'attachment; filename="' . $filename . '"')
             ->withHeader('Content-Length', (string) strlen($binary));
+    }
+    
+    /**
+     * MeterApp self-updater check (POST /api/android)
+     *
+     * Compatible with HttpsAndroidUpdater.checkForUpdate:
+     *   body: version=<current>&appId=<pkg>
+     *   200  -> text parsed by stripping spaces,[,],"
+     *           content = [targetVersion, appId, fileName, size]
+     *   non-200 -> HttpsStatusException (== no update)
+     *
+     * Download URL used by the app: <serverUrl>/api/android/{fileName}
+     */
+    public function listAndroid(Request $request, Response $response): Response
+    {
+        $data = $request->getParsedBody() ?? [];
+        $currentVersion = (int) ($data['version'] ?? 0);
+        $appId = (string) ($data['appId'] ?? '');
+        
+        // App-updater is unauthenticated in the client; we keep it open
+        // but gated by appId presence.
+        if ($appId === '') {
+            return $response->withStatus(400);
+        }
+        
+        // TODO: source this from a dedicated collection. For now we signal
+        // "no update available" which is the common steady state.
+        $response->getBody()->write('no update');
+        return $response->withStatus(204);
+    }
+    
+    /**
+     * MeterApp self-updater download (GET /api/android/{file})
+     */
+    public function downloadAndroid(Request $request, Response $response, string $file): Response
+    {
+        $response->getBody()->write('not found');
+        return $response->withStatus(404);
     }
     
     /**
