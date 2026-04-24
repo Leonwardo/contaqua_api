@@ -72,11 +72,30 @@ class MeterController
     public function meterToken(Request $request, Response $response): Response
     {
         $data = $request->getParsedBody() ?? [];
+        $rawBody = (string) $request->getBody();
+        
+        // Fallback: try to parse raw body if parsedBody is empty
+        if (empty($data) && $rawBody !== '') {
+            parse_str($rawBody, $data);
+        }
+        
         $userToken = (string) ($data['token'] ?? '');
         $challenge = (string) ($data['challenge'] ?? '');
         $deveui = (string) ($data['deveui'] ?? '');
         
+        $this->logger->debug('meter_token request', [
+            'has_token' => $userToken !== '',
+            'has_challenge' => $challenge !== '',
+            'deveui' => $deveui,
+            'parsed_count' => count($data),
+        ]);
+        
         if ($userToken === '' || $challenge === '' || $deveui === '') {
+            $this->logger->warning('meter_token missing params', [
+                'has_token' => $userToken !== '',
+                'has_challenge' => $challenge !== '',
+                'has_deveui' => $deveui !== '',
+            ]);
             $response->getBody()->write('unable to retrieve token');
             return $response->withStatus(401);
         }
