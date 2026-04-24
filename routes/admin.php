@@ -27,4 +27,6 @@ return function (App $app): void {
     // Admin API endpoints (JSON)
     $app->get('/api/admin/metrics', [AdminController::class, 'metrics']);
     $app->post('/api/admin/metrics', [AdminController::class, 'metrics']);
+    $app->get('/api/admin/users', [AdminController::class, 'users']);
+    $app->post('/api/admin/users', [AdminController::class, 'users']);
 };

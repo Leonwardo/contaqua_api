@@ -286,8 +286,8 @@ HTML;
         // Users table
         $rows = '';
         foreach ($users as $user) {
-            $qrData = isset($user['qr_payload']) ? htmlspecialchars($user['qr_payload']) : '';
-            $rows .= '<tr><td>' . htmlspecialchars($user['user'] ?? '') . '</td><td><span class="chip">' . htmlspecialchars($user['role'] ?? '') . '</span></td><td>' . ($user['user_id'] ?? '') . '</td><td><code>' . htmlspecialchars(substr($user['token'] ?? '', 0, 8)) . '...</code></td><td class="actions-cell"><button class="btn ghost small" onclick="openQRModal(\'' . htmlspecialchars($user['user'] ?? '') . '\', \'' . $qrData . '\')">QR</button><button class="btn ghost small" onclick="openEditModal(\'' . htmlspecialchars($user['user'] ?? '') . '\')">Editar</button><form method="post" class="mini-form"><input type="hidden" name="action" value="delete_user"><input type="hidden" name="admin_token" value="' . htmlspecialchars($token) . '"><input type="hidden" name="user" value="' . htmlspecialchars($user['user'] ?? '') . '"><button class="btn dark small" type="submit" onclick="return confirm(\'Eliminar ' . htmlspecialchars($user['user'] ?? '') . '?\')">Eliminar</button></form></td></tr>';
+            $username = htmlspecialchars((string) ($user['user'] ?? ''), ENT_QUOTES);
+            $rows .= '<tr><td>' . $username . '</td><td><span class="chip">' . htmlspecialchars((string) ($user['role'] ?? ''), ENT_QUOTES) . '</span></td><td>' . ((int) ($user['user_id'] ?? 0)) . '</td><td><code>' . htmlspecialchars(substr((string) ($user['token'] ?? ''), 0, 8), ENT_QUOTES) . '...</code></td><td class="actions-cell"><button class="btn ghost small" onclick="openMeterAppQrModal(\'' . $username . '\')">QR</button><button class="btn ghost small" onclick="openEditModal(\'' . $username . '\')">Editar</button><form method="post" class="mini-form"><input type="hidden" name="action" value="delete_user"><input type="hidden" name="admin_token" value="' . htmlspecialchars($token, ENT_QUOTES) . '"><input type="hidden" name="user" value="' . $username . '"><button class="btn dark small" type="submit" onclick="return confirm(\'Eliminar ' . $username . '?\')">Eliminar</button></form></td></tr>';
         }
         
         // Roles para dropdowns de criação/edição
@@ -426,19 +426,48 @@ HTML;
     </div>
 </div>
 
-<!-- Modal QR Code -->
+<!-- Modal QR MeterApp -->
 <div id="qrModal" class="modal">
-    <div class="modal-content" style="max-width: 400px;">
+    <div class="modal-content" style="max-width: 760px;">
         <div class="modal-header">
-            <h2>QR Code do Utilizador</h2>
+            <h2>QR Code MeterApp</h2>
             <button class="modal-close" onclick="closeModal('qrModal')">&times;</button>
         </div>
-        <div class="modal-body" style="text-align: center;">
-            <div id="qrCodeContainer" style="margin: 20px 0; padding: 20px; background: white; border-radius: 8px;">
-                <canvas id="qrCanvas" width="200" height="200"></canvas>
+        <div class="modal-body" style="display:grid; grid-template-columns: minmax(320px, 1fr) 300px; gap:20px; align-items:start;">
+            <div>
+                <div class="form-group">
+                    <label>Utilizador</label>
+                    <input type="text" id="qrUserName" placeholder="ex: joao">
+                </div>
+                <div class="form-group">
+                    <label>Password do utilizador</label>
+                    <input type="text" id="qrPassword" placeholder="password do utilizador">
+                </div>
+                <div style="display:grid; grid-template-columns: 1fr 120px; gap:10px;">
+                    <div class="form-group">
+                        <label>Servidor API</label>
+                        <input type="text" id="qrServer" placeholder="213.63.236.100">
+                    </div>
+                    <div class="form-group">
+                        <label>Porta</label>
+                        <input type="text" id="qrPort" placeholder="80">
+                    </div>
+                </div>
+                <div style="margin-top: 10px; display:flex; gap:8px; flex-wrap:wrap;">
+                    <button type="button" class="btn" onclick="generateMeterAppQr()">Gerar QR</button>
+                    <button type="button" class="btn ghost" onclick="copyMeterAppPayload()">Copiar payload</button>
+                </div>
+                <div class="form-group" style="margin-top:10px;">
+                    <label>Payload</label>
+                    <textarea id="qrPayload" rows="3" style="width:100%; padding:10px; border:1px solid #e0e5eb; border-radius:8px; font-size:12px; resize:vertical;" readonly></textarea>
+                </div>
             </div>
-            <p><strong id="qrUserName"></strong></p>
-            <p style="font-size: 12px; color: #666; word-break: break-all;" id="qrPayload"></p>
+            <div style="text-align: center;">
+                <div style="padding: 12px; background: white; border-radius: 10px; display:inline-block; border:1px solid #e0e5eb;">
+                    <canvas id="qrCanvas" width="280" height="280"></canvas>
+                </div>
+                <p id="qrHint" style="font-size:12px; color:#666; margin-top:10px;">Preencha os dados e clique em Gerar QR.</p>
+            </div>
         </div>
         <div class="modal-actions">
             <button type="button" class="btn ghost" onclick="closeModal('qrModal')">Fechar</button>
@@ -488,48 +517,162 @@ function openEditModal(user, role) {
     openModal('editUserModal');
 }
 
-function openQRModal(user, qrData) {
-    document.getElementById('qrUserName').textContent = user;
-    document.getElementById('qrPayload').textContent = qrData;
-    drawQR(qrData);
+function openMeterAppQrModal(user) {
+    const protocol = window.location.protocol === 'https:' ? 'https' : 'http';
+    const server = window.location.hostname || '213.63.236.100';
+    const fallbackPort = protocol === 'https' ? '443' : '80';
+    const currentPort = window.location.port || fallbackPort;
+
+    document.getElementById('qrUserName').value = user || '';
+    document.getElementById('qrPassword').value = '';
+    document.getElementById('qrServer').value = server;
+    document.getElementById('qrPort').value = currentPort;
+    updateMeterAppPayloadPreview();
+    document.getElementById('qrHint').textContent = user
+        ? ('Gerar QR para ' + user + '. Falta preencher a password para gerar o QR.')
+        : 'Preencha os dados e clique em Gerar QR.';
+    clearQrCanvas();
     openModal('qrModal');
 }
 
-function drawQR(data) {
+function clearQrCanvas() {
     const canvas = document.getElementById('qrCanvas');
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, 200, 200);
-    ctx.fillStyle = 'black';
-    
-    // Simple visual representation - in production use a QR library
-    const size = 25;
-    const cellSize = 7;
-    const offset = 10;
-    
-    for (let i = 0; i < size; i++) {
-        for (let j = 0; j < size; j++) {
-            const hash = (data.charCodeAt((i * size + j) % data.length) + i * j) % 2;
-            if (hash === 1) {
-                ctx.fillRect(offset + j * cellSize, offset + i * cellSize, cellSize - 1, cellSize - 1);
-            }
-        }
-    }
-    
-    // Draw position markers
-    ctx.fillRect(offset, offset, cellSize * 7, cellSize * 7);
-    ctx.fillRect(offset + cellSize * 2, offset + cellSize * 2, cellSize * 3, cellSize * 3);
-    ctx.fillStyle = 'white';
-    ctx.fillRect(offset + cellSize, offset + cellSize, cellSize * 5, cellSize * 5);
-    ctx.fillStyle = 'black';
-    ctx.fillRect(offset + cellSize * 2, offset + cellSize * 2, cellSize * 3, cellSize * 3);
-    ctx.fillRect(offset + cellSize * 3, offset + cellSize * 3, cellSize, cellSize);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
+function sanitizePort(port) {
+    const cleaned = String(port || '').trim();
+    if (!/^\d+$/.test(cleaned)) {
+        return '';
+    }
+
+    const numeric = Number(cleaned);
+    if (numeric < 1 || numeric > 65535) {
+        return '';
+    }
+
+    return String(numeric);
+}
+
+function buildMeterAppPayload(user, pass, server, port) {
+    return [
+        'user=' + encodeURIComponent(user),
+        'pass=' + encodeURIComponent(pass),
+        'server=' + encodeURIComponent(server),
+        'port=' + encodeURIComponent(port)
+    ].join('&');
+}
+
+function updateMeterAppPayloadPreview() {
+    const user = document.getElementById('qrUserName').value.trim();
+    const pass = document.getElementById('qrPassword').value.trim();
+    const server = document.getElementById('qrServer').value.trim();
+    const port = sanitizePort(document.getElementById('qrPort').value) || String(document.getElementById('qrPort').value || '').trim();
+
+    if (!user && !pass && !server && !port) {
+        document.getElementById('qrPayload').value = '';
+        return;
+    }
+
+    document.getElementById('qrPayload').value = buildMeterAppPayload(user, pass, server, port);
+}
+
+function ensureQrLibrary() {
+    return new Promise((resolve, reject) => {
+        if (typeof QRCode !== 'undefined' && typeof QRCode.toCanvas === 'function') {
+            resolve();
+            return;
+        }
+
+        const existing = document.getElementById('meterapp-qr-lib');
+        if (existing) {
+            existing.addEventListener('load', () => resolve());
+            existing.addEventListener('error', () => reject(new Error('Falha ao carregar biblioteca QR')));
+            return;
+        }
+
+        const script = document.createElement('script');
+        script.id = 'meterapp-qr-lib';
+        script.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js';
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error('Falha ao carregar biblioteca QR'));
+        document.head.appendChild(script);
+    });
+}
+
+async function generateMeterAppQr() {
+    const user = document.getElementById('qrUserName').value.trim();
+    const pass = document.getElementById('qrPassword').value.trim();
+    const server = document.getElementById('qrServer').value.trim();
+    const port = sanitizePort(document.getElementById('qrPort').value);
+
+    updateMeterAppPayloadPreview();
+
+    if (!user || !pass || !server || !port) {
+        document.getElementById('qrHint').textContent = 'Preencha utilizador, password, servidor e porta válida (1-65535).';
+        alert('Preencha utilizador, password, servidor e porta válida (1-65535).');
+        return;
+    }
+
+    try {
+        await ensureQrLibrary();
+    } catch (e) {
+        alert('Não foi possível carregar a biblioteca de QR.');
+        return;
+    }
+
+    const payload = buildMeterAppPayload(user, pass, server, port);
+    const canvas = document.getElementById('qrCanvas');
+    document.getElementById('qrPayload').value = payload;
+
+    QRCode.toCanvas(canvas, payload, {
+        width: 260,
+        margin: 2,
+        color: { dark: '#111827', light: '#ffffff' }
+    }, function(error) {
+        if (error) {
+            alert('Não foi possível gerar o QR Code.');
+            return;
+        }
+        document.getElementById('qrHint').textContent = 'QR gerado com sucesso.';
+    });
+}
+
+function copyMeterAppPayload() {
+    updateMeterAppPayloadPreview();
+    const payload = document.getElementById('qrPayload').value.trim();
+    if (!payload) {
+        alert('Gera primeiro o QR para copiar o payload.');
+        return;
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(payload).catch(() => {});
+    }
+}
+
+['qrUserName', 'qrPassword', 'qrServer', 'qrPort'].forEach(function(id) {
+    const element = document.getElementById(id);
+    if (!element) {
+        return;
+    }
+
+    element.addEventListener('input', updateMeterAppPayloadPreview);
+});
+
 function downloadQR() {
+    const payload = document.getElementById('qrPayload').value.trim();
+    if (!payload) {
+        alert('Gera primeiro o QR antes de fazer download.');
+        return;
+    }
+
     const canvas = document.getElementById('qrCanvas');
     const link = document.createElement('a');
-    link.download = 'qr-' + document.getElementById('qrUserName').textContent + '.png';
+    const user = document.getElementById('qrUserName').value.trim() || 'user';
+    link.download = 'meterapp-' + user + '-login-qr.png';
     link.href = canvas.toDataURL();
     link.click();
 }

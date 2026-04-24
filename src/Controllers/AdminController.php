@@ -107,6 +107,48 @@ class AdminController
         $response->getBody()->write(json_encode($data));
         return $response->withHeader('Content-Type', 'application/json');
     }
+
+    /**
+     * Admin users API
+     * GET /api/admin/users
+     */
+    public function users(Request $request, Response $response): Response
+    {
+        if (!$this->isAuthorized($request)) {
+            $response->getBody()->write(json_encode([
+                'ok' => false,
+                'error' => 'Unauthorized',
+            ]));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(401);
+        }
+
+        $queryParams = $request->getQueryParams();
+        $limit = (int) ($queryParams['limit'] ?? 500);
+        if ($limit < 1) {
+            $limit = 1;
+        }
+        if ($limit > 2000) {
+            $limit = 2000;
+        }
+
+        $users = $this->adminService->listUsers($limit);
+        $items = [];
+        foreach ($users as $user) {
+            $items[] = [
+                'user' => (string) ($user['user'] ?? $user['username'] ?? ''),
+                'user_id' => (int) ($user['user_id'] ?? 0),
+                'role' => (string) ($user['role'] ?? 'TECHNICIAN'),
+                'access' => (int) ($user['access'] ?? 0),
+                'valid_until' => (string) ($user['valid_until'] ?? ''),
+            ];
+        }
+
+        $response->getBody()->write(json_encode([
+            'ok' => true,
+            'users' => $items,
+        ]));
+        return $response->withHeader('Content-Type', 'application/json');
+    }
     
     /**
      * Users management page
